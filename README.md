@@ -16,7 +16,7 @@
 
 ```
 成员电脑：品牌化官方桌面端（Host 运行在本机）
-  公司账号插件（替换 deepseek-account）── GitHub 登录 ──▶ 公司服务 https://agent.glgwork.com（新加坡云服务器）
+  公司账号插件（替换 deepseek-account）── GitHub 登录 ──▶ 公司服务 https://agent.glwork.net（公司内网集群，经香港 frps 对外）
   模型请求 ── 每人一个网关 Key ──▶ 统一模型网关 ──▶ DeepSeek / 其他厂商
 ```
 
@@ -45,12 +45,12 @@
   - 设置 > 模型底部的“命令行 Agent”（`settings.models.footer`）：检测 Claude Code、Codex、Qoder CLI（PATH 和各官方安装位置），显示版本和登录状态（`claude auth status`、`codex login status`），以及公司分配的订阅账号名。没装的点“安装”：确认后运行 Claude / Qoder 的官方安装脚本（Qoder 带 `--skip-path`，不改终端配置），或下载 `cli-release.json` 固定版本的 Codex 官方程序并核对 sha256，都装到 `~/.local/bin`。“登录”启动各工具自己的登录流程，GL Work 不读取、不保存订阅凭据。
   - 直连模式：三个命令行注册成模型“Claude Code（本机）”“Codex（本机）”“Qoder CLI（本机）”。选中后每轮只把成员的最新输入交给命令行（GL Work 追加的提醒不交），命令行用自己的会话续接（会话 id 存在 `$DSH_HOME/agent-work/cli-sessions.json`），工作目录是当前工作区，**拥有全部权限**。Claude Code / Qoder 是常驻的 stream-json 进程（Claude 带 `--permission-prompt-tool stdio`），Codex 每轮一次 `codex exec --json`。Claude 的选择题（AskUserQuestion）转成 GL Work 原生的 `ask_user_question` 提问卡片，回答后交还给等待中的 Claude；命令行用到的工具以进度文字显示在思考区。停止按钮中断当前一轮，会话保留。斜杠命令：`/clear` 开新的命令行会话，`/compact` 让命令行压缩上下文，`/cli <内容>` 原样交给命令行。另有一个只挂提问工具、不发系统提示词的“直连模式”预设。
   - 调试：Host 设 `AW_AGENTS_DEBUG=<文件>` 时，把收到的请求和命令行事件逐行写入该文件。
-- **服务器地址**：公司账号插件的 `serverOrigin` 默认 `https://agent.glgwork.com`，是可以在运行中修改的配置项。登录窗口的“服务器设置”（补丁 0010：账号提供方有 `serverOrigin` 这个可修改的配置项时才显示）通过 `settings/mutate` 把成员选的地址存进他自己的 profile 补丁，“恢复默认”删除这一项。换服务器时，进行中的登录会被取消，旧服务器签发的登录凭据会被删除；只接受 https 地址，本机地址要 `allowLoopbackHttp` 才能用 http。地址不是默认值时，登录窗口会提示当前连接的服务器。
+- **服务器地址**：公司账号插件的 `serverOrigin` 默认 `https://agent.glwork.net`，是可以在运行中修改的配置项。登录窗口的“服务器设置”（补丁 0010：账号提供方有 `serverOrigin` 这个可修改的配置项时才显示）通过 `settings/mutate` 把成员选的地址存进他自己的 profile 补丁，“恢复默认”删除这一项。换服务器时，进行中的登录会被取消，旧服务器签发的登录凭据会被删除；只接受 https 地址，本机地址要 `allowLoopbackHttp` 才能用 http。地址不是默认值时，登录窗口会提示当前连接的服务器。
 - **公司文档**：用户上拉菜单的“意见反馈”换成“公司文档”，在浏览器打开 `https://work.glwiki.com/`（补丁 0009 给 `ui-settings-account` 加了 `docsUrl`，地址写在 team-bundle 的 `cordis.patch.yml`）。
 - **内网穿透插件**（`plugins/tunnel`，`@agent-work/dsh-tunnel`）：“插件”页里的“内网穿透”卡片（`plugins.item`）。Host 端从 `GET /agent-work/tunnels` 读取成员的隧道，只运行登记在这台设备上、成员打开了的隧道，启动 frpc（令牌经环境变量传给 frpc，配置文件里没有令牌）。网页隧道的访问密码只保存在本机 `$DSH_HOME/agent-work/tunnel/local.json`（权限 600），不发给公司服务；同事分享的 SSH 隧道点“连接”后在本机 62200 起的端口监听。frpc 退出会自动重启，GL Work 退出时一起退出。frpc 随插件附带在 `bin/<平台>-<架构>/`：版本和各平台官方发布包的 sha256 固定在 `plugins/tunnel/frpc-release.json`，`scripts/fetch-frpc.mjs` 下载并核对后放进去（不入库）。打包时 `scripts/package.mjs` 只放目标平台的那一个，并在构建副本的 `package.json` 里把它写进 `bin`（`pnpm pack` 只给 `bin` 里的文件保留可执行位）；补丁 0008 把预装插件的 `bin/` 放在 `app.asar.unpacked`，mac 打包时随其他原生程序一起签名。本地开发执行 `pnpm --filter @agent-work/dsh-tunnel fetch-frpc` 取本机平台的 frpc，或在 profile 补丁里用 `config: { frpcPath: <frpc 路径> }` 指定。升级 frpc 时，服务器上的 frps 要升到同一版本。
   同一个插件还有“手机远程”卡片：成员确认后打开，Host 端在 127.0.0.1 的随机端口提供远程协议（`plugins/tunnel/remote.js`，移植自 deepseek-harness-desktop 的 `remote-v1.js`，MIT，见 `THIRD_PARTY_NOTICES.md`；按 dsh 0.2 改了三处：排队消息读 `inbox` 投影，子代理列表读 `subagentCatalog`，`$events` 按新签名打开），frpc 把它发布到公司登记的内部地址，并给每个转发的请求加上 `x-agent-work-remote: <本机密钥>`（密钥只在本机 `local.json` 和 frpc 配置里，权限 600），本地服务没有这个头一律 403，所以本机其他账户也连不上。方法白名单：`host.describe`、`workspace.list`、`session.*`（list/create/history/attachment/models/selectModel/prompt/updateQueue/cancel）、`subagent.*`（list/history/prompt/interrupt），加上 `respond`（审批和提问）和 `events.mux`。手机上的操作等同于在电脑上操作（直连模式的全部权限同样有效），打开前的确认框会说明。
 - **管理后台**：网站根路径 `/`，GitHub 登录，只有管理员能进入；普通成员登录后进入自己的工作台 `/me`（开通的 AI 资源和用法、内部 Key、设备、系统配置）。页面在服务端渲染，修改通过表单提交，只接受本站发起的请求；业务规则（不能停用自己、至少保留一个管理员、独立 Key 只给一个人……）都在 `gateway/src/services.ts`，每个操作写审计日志（不记录 Key、令牌和配置值）。内网穿透一页管理隧道、隧道域名和设置。
-- GitHub OAuth App 建在 `GL-Game-Group` 组织下，回调地址是 `https://agent.glgwork.com/agent-work/auth/github/callback`。
+- GitHub OAuth App 建在 `GL-Game-Group` 组织下，回调地址是 `https://agent.glwork.net/agent-work/auth/github/callback`。
 - 管理员命令行的用法见 [cli.ts](gateway/src/cli.ts) 文件开头的说明。
 
 开发：
@@ -127,6 +127,25 @@ pnpm package package:desktop:mac:arm64       # 签名安装包
 修改后执行 `pnpm brand`。它会生成 overlay 里的应用图标（macOS、Windows）、欢迎页字标、Web favicon 和清单，以及补丁 0006 和 0007 读取的品牌数据文件（各包里的 `brand.ts`，官方品牌插件里的 `product.ts`）。打包配置里的 `DSH_DESKTOP_PRODUCT_NAME` 要和 `brand.json` 的产品名保持一致，不一致时 `pnpm brand` 会提示。然后执行 `pnpm run stage --reset`，再完整打包（文案改动需要重新构建，不能用 `--skip-build`）。
 
 ## 部署公司服务
+
+**现在的部署**：公司内网集群 office-test（Rancher + Fleet），清单在 infra 仓库 `fleet/apps/agent-work`（GL-Game-Group/infra PR #1）。
+
+- 镜像：`main` 上 `admin/`、`gateway/`、`deploy/Dockerfile` 有改动时，`.github/workflows/image.yml` 调用组织流水线构建并推到 `glwork-registry.cn-hongkong.cr.aliyuncs.com/glwork/agent-work:<提交 SHA>`。发布新版本：在 infra 的 `fleet/apps/agent-work/company-service.yaml` 把镜像标签改成新的 SHA，提 PR 合并，Fleet 滚动更新。
+- 访问路径：`agent.glwork.net`、`frp.glwork.net`、`*.glwork.app` 的 DNS（external-dns 建，不经 Cloudflare 代理）指向香港 frps 8.217.141.116 → 集群里的 frpc → Traefik（cert-manager 签发的证书）→ 公司服务 / 成员 frps。
+- 数据：SQLite 在静态卷 `agent-work-data`（`prod-1` 的 `/var/lib/agent-work/data`）。密钥在命名空间 `agent-work` 的 Secret `agent-work-env`（`GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`AGENT_WORK_SECRET_KEY`、`AGENT_WORK_FRP_PLUGIN_SECRET`），不在 Git；加密主密钥丢了，存着的厂商 Key 就读不出来，要和数据一起备份。
+- 出站：经 `egress-proxy`（香港）访问 GitHub 和模型厂商，`NODE_USE_ENV_PROXY=1` 让 Node 按 `HTTPS_PROXY` 走代理。
+- 管理：项目自己的 kubeconfig（只限命名空间 `agent-work`，90 天，infra 的 `scripts/tenant-kubeconfig.sh agent-work 90 <文件>` 签发）放在 `deploy/agent-work.kubeconfig`（不入库）：
+
+```sh
+K=deploy/agent-work.kubeconfig
+kubectl --kubeconfig $K get pods
+kubectl --kubeconfig $K exec deploy/agent-work -- node gateway/src/cli.ts member list    # 管理员命令行
+kubectl --kubeconfig $K logs deploy/agent-work --tail 100
+```
+
+- `deploy/agent-deploy/`：平台的 `deploy.sh`（测试服务用，`*.glwork.dev`，无状态、单个 HTTP 应用），公司服务不用它。
+
+**备用：Docker Compose**（一台有 Docker 的服务器，前面有基础设施 frps 时）。下面是 2026-10-05 在 47.236.206.86 上的部署方式，那台服务器已经下线，保留以便需要时再用：
 
 公司服务（管理后台 + 公司服务，一个进程）和成员用的 frps 部署在新加坡服务器 47.236.206.86，只用 Docker Compose，文件在 `deploy/`。这台服务器的 80/443 属于基础设施的 frps（systemd，`/etc/frp/frps.toml`，内部集群的入口：80 是控制通道，443 按 SNI 透传，前面是 Cloudflare 代理），我们不改它，只作为它的一个客户端接入：
 

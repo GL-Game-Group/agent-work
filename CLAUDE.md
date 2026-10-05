@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-公司内部 AI 工作台。团队 3–8 人（产品、开发、测试）。每个成员使用品牌化的官方 DeepSeek Harness 桌面端，Host 运行在本机。只替换登录部分：成员用 GitHub 账号登录公司服务（`https://agent.glgwork.com`，部署在新加坡云服务器），登录后由公司服务下发模型配置、网关 Key 和团队插件。macOS 安装包在负责人的电脑上签名和公证（`overlay/apps/desktop` 的打包流程）；服务器端的构建和发布集成在新加坡云服务器。使用方法和命令见 [README.md](README.md)；需求背景见 [项目设计.md](项目设计.md)。
+公司内部 AI 工作台。团队 3–8 人（产品、开发、测试）。每个成员使用品牌化的官方 DeepSeek Harness 桌面端，Host 运行在本机。只替换登录部分：成员用 GitHub 账号登录公司服务（`https://agent.glwork.net`，部署在公司内网集群 office-test，经香港 frps 对外），登录后由公司服务下发模型配置、网关 Key 和团队插件。macOS 安装包在负责人的电脑上签名和公证（`overlay/apps/desktop` 的打包流程）；服务器端的构建和发布集成在新加坡云服务器。使用方法和命令见 [README.md](README.md)；需求背景见 [项目设计.md](项目设计.md)。
 
 ## 架构
 
@@ -11,10 +11,10 @@
 | 3 | 桌面端补丁：0004 预装 team-bundle；0005 登录界面只保留公司登录；0006、0007 品牌；0008 预装插件的 `bin/` 放到 asar 外；0009 用户菜单的“公司文档”；0010 登录窗口的服务器设置；0011 工作区菜单的插件扩展点；打包 | `patches/`、`overlay/` | 已完成 |
 | 4 | 配置下发和模型网关（第一版内置透传网关，用设备令牌作为每人的 Key；以后需要多厂商协议转换时再引入 LiteLLM） | `gateway/`、`plugins/` | 已完成（第一版） |
 | 5 | 管理后台第一版（成员、设备、用量、审计）；本地调试完成后部署 | `gateway/` | 已完成 |
-| 5.1 | 部署到新加坡云服务器 47.236.206.86（Docker Compose：Traefik + 公司服务 + frps，不用 Dokploy）；在负责人电脑上打出签名的 mac 安装包；里程碑 M1：内测 | `deploy/` | 已上线（2026-10-05）：`https://agent.glgwork.com` 经基础设施 frps 接入，管理员 wuming；源站证书暂为自签（等 Cloudflare 令牌的证书权限），成员网页隧道等新的泛域名；mac 安装包待打 |
+| 5.1 | 部署：公司内网集群 office-test（Rancher，infra 仓库的 Fleet：`fleet/apps/agent-work`），经香港 frps 对外；镜像由 `.github/workflows/image.yml` 推到阿里云 ACR；在负责人电脑上打出签名的 mac 安装包；里程碑 M1：内测 | `deploy/`、infra | infra PR #1 待合并（公司服务 `agent.glwork.net`、成员 frps、`*.glwork.app`）；Docker Compose（`deploy/compose.yml`）保留为备用；mac 安装包待打 |
 | 5.2 | 厂商管理（API Key 和账号两种登录方式）、加密 Key、模型开放、按成员分配、多厂商模型网关、公共配置 | `gateway/`、`plugins/` | 已完成；客户端读取公共配置和 CLI 账号的接口留到阶段 8 |
 | 5.3 | 管理后台重做（SvelteKit + shadcn-svelte，和公司服务同进程）：订阅、独立 Key、内部 Key、系统配置读取接口、成员工作台 | `admin/`、`gateway/` | 已完成 |
-| 6 | 自动更新：OSS 和强制更新策略（0006）；发布流程集成到新加坡云服务器；里程碑 M2：全员推广 | `patches/`、`scripts/` | |
+| 6 | 自动更新：OSS 和强制更新策略（0006）；发布流程集成到 infra（Fleet）；里程碑 M2：全员推广 | `patches/`、`scripts/` | |
 | 7 | 插件分发：插件包（tarball）放 OSS，后台登记版本和下载地址，成员在 GL Work 里按需安装；插件多了或互相依赖时再引入私有 npm 源；内网穿透插件预装 | `gateway/`、`plugins/` | 后台插件目录、桌面端“公司插件”列表和安装（核对 sha512）已完成；预装内网穿透随 7.1 一起做 |
 | 7.1 | 内网穿透（frp）：frps 回调公司服务校验登录、隧道和心跳；后台管理隧道、域名、设置；`plugins/tunnel` 运行 frpc；随 GL Work 预装 | `gateway/`、`admin/`、`plugins/` | 服务端、后台、桌面端插件、随 GL Work 附带 frpc 并预装已完成（签名的 mac 目录版里实际开过隧道）；frps 部署随 5.1 |
 | 7.2 | 工作区管理：本地文件夹或公司 GitHub 仓库新建工作区，复制为工作区（git 工作树），GitHub CLI 一键安装和登录 | `plugins/workspace`、`patches/` | 插件和补丁 0011 已完成（真实 Host 端到端测试） |
