@@ -83,7 +83,7 @@ AGENT_WORK_DSH=<装有 dsh 的目录> AGENT_WORK_FRP_DIR=<frp 发行包目录> n
 
 ## 手机端（iOS）
 
-`mobile/ios`：GL Work for iOS，原生 SwiftUI，iOS 17 起，改编自 DSHRemote（MIT，见 `mobile/ios/LICENSE-DSHRemote`）。对话、会话、子代理、审批和提问的界面与远程协议沿用原项目；配对、扫码、局域网、Tailscale 去掉，换成公司 GitHub 登录（`ASWebAuthenticationSession`，PKCE，回调 `glwork://auth`）和“我的电脑”列表（`GET /agent-work/remote/hosts`），所有请求经公司服务中转（见上面的“手机远程（中转）”）。手机令牌存在钥匙串（仅本机）。默认服务器 `https://agent.glgwork.com`，登录页的“服务器设置”可以改。Bundle ID `com.glgwork.work`，只用 TestFlight 内部测试分发，不上架 App Store（避开大陆区的 App 备案和生成式 AI 许可要求）。图标和登录页的标志由 `pnpm brand` 生成。
+`mobile/ios`：GL Work for iOS，原生 SwiftUI，iOS 17 起，改编自 DSHRemote（MIT，见 `mobile/ios/LICENSE-DSHRemote`）。对话、会话、子代理、审批和提问的界面与远程协议沿用原项目；配对、扫码、局域网、Tailscale 去掉，换成公司 GitHub 登录（`ASWebAuthenticationSession`，PKCE，回调 `glwork://auth`）和“我的电脑”列表（`GET /agent-work/remote/hosts`；启动或登录后只有一台在线时直接进入它，每次只自动进入一次），所有请求经公司服务中转（见上面的“手机远程（中转）”）。手机令牌存在钥匙串（仅本机）。默认服务器 `https://agent.glgwork.com`，登录页的“服务器设置”可以改。Bundle ID `com.glgwork.work`，只用 TestFlight 内部测试分发，不上架 App Store（避开大陆区的 App 备案和生成式 AI 许可要求）。图标和登录页的标志由 `pnpm brand` 生成。
 
 ```bash
 # 模拟器构建（不签名）

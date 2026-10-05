@@ -3,6 +3,8 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var account: CompanyAccount
     @State private var path: [CompanyHost] = []
+    /// Whether this launch (or sign-in) already decided to open the only Mac online.
+    @State private var autoOpenDecided = false
 
     var body: some View {
         Group {
@@ -17,6 +19,21 @@ struct RootView: View {
         #endif
         }
         .statusBarHidden(false)
+        .onChange(of: account.isSignedIn) { _, signedIn in
+            if !signedIn {
+                path = []
+                autoOpenDecided = false
+            }
+        }
+    }
+
+    /// One Mac online: go straight in, once per launch or sign-in. Going back to the list,
+    /// or a refresh while there, stays on the list; with several online (or none) the member picks.
+    private func openOnlyOnlineMac() {
+        guard !autoOpenDecided, account.hostsLoaded else { return }
+        autoOpenDecided = true
+        let online = account.hosts.filter(\.reachable)
+        if path.isEmpty, online.count == 1 { path = online }
     }
 
     @ViewBuilder
@@ -30,9 +47,8 @@ struct RootView: View {
                     }
             }
             .tint(RemoteTheme.accent)
-            .onChange(of: account.isSignedIn) { _, signedIn in
-                if !signedIn { path = [] }
-            }
+            .onChange(of: account.hostsLoaded) { _, _ in openOnlyOnlineMac() }
+            .onChange(of: account.hosts) { _, _ in openOnlyOnlineMac() }
             #if DEBUG
             .onChange(of: account.hosts) { _, hosts in
                 // UI checks in the simulator: open the first Mac without a tap.
