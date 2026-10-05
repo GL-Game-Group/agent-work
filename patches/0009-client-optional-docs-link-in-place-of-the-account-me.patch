@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Sun, 4 Oct 2026 22:13:53 +0800
+Subject: [PATCH 09/11] client: optional docs link in place of the account menu
+ feedback entry
+
+
+diff --git a/packages/client/ui-settings-account/src/client/AccountMenu.tsx b/packages/client/ui-settings-account/src/client/AccountMenu.tsx
+index c8c567ad17..f03d6931b0 100644
+--- a/packages/client/ui-settings-account/src/client/AccountMenu.tsx
++++ b/packages/client/ui-settings-account/src/client/AccountMenu.tsx
+@@ -1,7 +1,8 @@
+ /** Sidebar account launcher and locally authoritative sign-out action. */
+ import { useEffect, useRef, useState } from 'react'
+ import {
+-  Toast, Menu, IconEllipsisOutlineMedium, IconPaperPlaneOutlineMedium, IconSettingsOutlineMedium, IconUserOutlineMedium,
++  Toast, Menu, IconEllipsisOutlineMedium, IconLinkOutlineMedium, IconPaperPlaneOutlineMedium,
++  IconSettingsOutlineMedium, IconUserOutlineMedium,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+ import type { AccountSectionInjected } from './AccountSection.tsx'
+@@ -22,7 +23,7 @@ export type AccountMenuProps = PropsRuntime<'settings.launcher'> & PropsLocale<'
+ export function AccountMenu({
+   subscribeSessionExpired, subscribeModelSignInRequired, wide, settingsShortcut, openSettings, openOnboarding, settingsOpen,
+   useAccount, useTheme, signOut, hasRunningAccountTasks, refreshAccount, bonusNoticeShown, bonusNoticeDismissed,
+-  contactUs, showLogin, start, cancel, t, platformAccount = true,
++  contactUs, docsUrl, showLogin, start, cancel, t, platformAccount = true,
+ }: AccountMenuProps) {
+   const anchor = useRef<HTMLDivElement>(null)
+   // The launcher outlives the panel, so a false-to-true edge is one Settings entry:
+@@ -71,7 +72,8 @@ export function AccountMenu({
+       items={[
+         { id: 'settings', label: t('settings'), icon: <IconSettingsOutlineMedium size={16} />,
+           ...(settingsShortcut === undefined ? {} : { shortcut: settingsShortcut }) },
+-        { id: 'contact', label: t('contactUs'), icon: <IconPaperPlaneOutlineMedium size={16} /> },
++        docsUrl ? { id: 'docs', label: t('docs'), icon: <IconLinkOutlineMedium size={16} /> }
++          : { id: 'contact', label: t('contactUs'), icon: <IconPaperPlaneOutlineMedium size={16} /> },
+         ...(signedIn ? [{ id: 'signout', label: t('signOut'), icon: <LogoutIcon />, disabled: busy }]
+           : [{ id: 'signin', label: t('signIn'), icon: <IconUserOutlineMedium size={16} /> }]),
+       ]}
+@@ -79,6 +81,8 @@ export function AccountMenu({
+       onSelect={(id) => {
+         if (id === 'settings') { setOpen(false); trigger.current?.focus(); openSettings() }
+         else if (id === 'contact') { setOpen(false); contactUs() }
++        // Desktop windows hand web links to the system browser.
++        else if (id === 'docs' && docsUrl) { setOpen(false); window.open(docsUrl, '_blank', 'noopener,noreferrer') }
+         else if (id === 'signin') beginSignIn()
+         else void requestSignOut()
+       }} />
+diff --git a/packages/client/ui-settings-account/src/client/AccountSection.tsx b/packages/client/ui-settings-account/src/client/AccountSection.tsx
+index 8a0a3e1db5..c8cfc8cc4f 100644
+--- a/packages/client/ui-settings-account/src/client/AccountSection.tsx
++++ b/packages/client/ui-settings-account/src/client/AccountSection.tsx
+@@ -62,6 +62,8 @@ export interface AccountSectionInjected {
+   refreshAccount: () => Promise<void>
+   /** Open the external support questionnaire with the account, build and environment sampled by this click. */
+   contactUs: () => void
++  /** Documentation URL shown instead of the questionnaire entry; absent or empty keeps the questionnaire. */
++  docsUrl?: string
+   /** Open or dismiss the login dialog. */
+   showLogin: (visible: boolean) => void
+   /** Claim dialog ownership for the onboarding step. */
+diff --git a/packages/client/ui-settings-account/src/client/index.ts b/packages/client/ui-settings-account/src/client/index.ts
+index 17db79b4f7..6f084163e5 100644
+--- a/packages/client/ui-settings-account/src/client/index.ts
++++ b/packages/client/ui-settings-account/src/client/index.ts
+@@ -160,6 +160,7 @@ export function apply(ctx: Context): void {
+     subscribeModelSignInRequired: listener => ctx.remote.$on('deepseek-account/model-sign-in-required', listener),
+     ...nativePlatform === undefined ? {} : { openPlatformPage: platformPageOpener(refreshAccount) },
+     platformAccount: config.platformAccount,
++    docsUrl: config.docsUrl,
+     refreshAccount,
+     contactUs() {
+       // Sample the account, build and environment before awaiting native information, so
+diff --git a/packages/client/ui-settings-account/src/client/locales.ts b/packages/client/ui-settings-account/src/client/locales.ts
+index 990a485c60..fd8a42e227 100644
+--- a/packages/client/ui-settings-account/src/client/locales.ts
++++ b/packages/client/ui-settings-account/src/client/locales.ts
+@@ -15,7 +15,7 @@ export const en = {
+   failureTitle: 'Could not sign in',
+   platformFailed: 'Could not complete the operation. Try again.', platformRetry: 'Retry',
+   loading: 'Loading…', backToHarness: `Back to ${brand.productName}`,
+-  settings: 'Settings', contactUs: 'Feedback', menu: 'Account menu',
++  settings: 'Settings', contactUs: 'Feedback', docs: 'Company docs', menu: 'Account menu',
+   nav: 'Account', navAccount: 'Account', signedIn: `Signed in to ${brand.accountProvider}`, signedOut: 'Not signed in',
+   signIn: 'Sign in', signOut: 'Sign out',
+   signOutUnknownDescription: 'Could not check running tasks. Signing out may interrupt tasks using this account. Sign out now?',
+@@ -50,7 +50,7 @@ export const zh: Record<AccountKey, string> = {
+   failureTitle: '登录失败',
+   platformFailed: '操作未完成，请重试', platformRetry: '重试',
+   loading: '加载中…', backToHarness: `返回 ${brand.productName}`,
+-  settings: '设置', contactUs: '意见反馈', menu: '账号菜单',
++  settings: '设置', contactUs: '意见反馈', docs: '公司文档', menu: '账号菜单',
+   nav: '账号与余额', navAccount: '账号', signedIn: `已登录 ${brand.accountProvider}`, signedOut: '尚未登录',
+   signIn: '登录', signOut: '退出登录',
+   signOutUnknownDescription: '暂时无法确认任务状态。退出登录可能会中断使用此账号的任务，是否继续？',
+diff --git a/packages/client/ui-settings-account/src/contact-config.ts b/packages/client/ui-settings-account/src/contact-config.ts
+index 391a0337df..2e8e1bdb52 100644
+--- a/packages/client/ui-settings-account/src/contact-config.ts
++++ b/packages/client/ui-settings-account/src/contact-config.ts
+@@ -17,6 +17,11 @@ export interface ContactConfig {
+    * Platform turn this off.
+    */
+   platformAccount: boolean
++  /**
++   * HTTPS documentation URL that replaces the account menu's feedback entry, opened as is in
++   * the browser; empty keeps the feedback questionnaire.
++   */
++  docsUrl: string
+ }
+ /** Validate public questionnaire options. */
+ export const ContactConfigFields = {
+@@ -25,6 +30,7 @@ export const ContactConfigFields = {
+   bonusAckRetryDelayMs: z.number().min(1).default(1_000),
+   bonusAckRetryMaxDelayMs: z.number().min(1).default(60_000),
+   platformAccount: z.boolean().default(true),
++  docsUrl: z.string().pattern(/^(https:\/\/[^/\s]+\/\S*)?$/).default(''),
+ }
+ /** Validate public questionnaire options. */
+ export const ContactConfig: z<Partial<ContactConfig>, ContactConfig> = z.object(ContactConfigFields)
+diff --git a/packages/client/ui-settings-account/src/index.ts b/packages/client/ui-settings-account/src/index.ts
+index 2cf73b80da..e739f562a3 100644
+--- a/packages/client/ui-settings-account/src/index.ts
++++ b/packages/client/ui-settings-account/src/index.ts
+@@ -30,6 +30,7 @@ export const Config = z.object({
+   bonusAckRetryDelayMs: ContactConfigFields.bonusAckRetryDelayMs,
+   bonusAckRetryMaxDelayMs: ContactConfigFields.bonusAckRetryMaxDelayMs,
+   platformAccount: ContactConfigFields.platformAccount,
++  docsUrl: ContactConfigFields.docsUrl,
+   version: OnboardingSettingsFields.version.volatile(),
+   step: OnboardingSettingsFields.step.volatile(),
+   purpose: OnboardingSettingsFields.purpose.volatile(),
+@@ -52,7 +53,7 @@ export function apply(ctx: Context, config: Config): void {
+     table.push({ kind: 'global', name: CONTACT_CONFIG_GLOBAL, value: {
+       contactFormUrl: config.contactFormUrl, contactSource: config.contactSource,
+       bonusAckRetryDelayMs: config.bonusAckRetryDelayMs, bonusAckRetryMaxDelayMs: config.bonusAckRetryMaxDelayMs,
+-      platformAccount: config.platformAccount,
++      platformAccount: config.platformAccount, docsUrl: config.docsUrl,
+     } satisfies ContactConfig })
+   })
+ }
+diff --git a/packages/client/ui-settings-account/tests/account.client.spec.tsx b/packages/client/ui-settings-account/tests/account.client.spec.tsx
+index de1ed744d2..9e1f7f8280 100644
+--- a/packages/client/ui-settings-account/tests/account.client.spec.tsx
++++ b/packages/client/ui-settings-account/tests/account.client.spec.tsx
+@@ -213,6 +213,22 @@ it.each([en, zh])('offers settings, contact and sign-in from the signed-out acco
+   expect(operations.contactUs).toHaveBeenCalledOnce()
+ })
+ 
++it.each([en, zh])('offers the configured documentation link instead of the questionnaire', async (copy) => {
++  const operations = { ...operationsOf({ status: 'signed-out', attempt: null }), docsUrl: 'https://docs.example.com/' }
++  const open = vi.spyOn(window, 'open').mockReturnValue(null)
++  const { AccountMenu } = await import('../src/client/AccountMenu.tsx')
++  render(<AccountMenu {...({} as GlobalStandardProps)} {...operations} settingsOpen={false}
++    useAccount={selector => selector(operations.hooks.account.getSnapshot())}
++    useTheme={selector => selector(operations.hooks.theme.getSnapshot())} wide openOnboarding={() => {}} openSettings={() => {}}
++    t={key => key in copy ? copy[key as AccountKey] : key} />)
++  fireEvent.click(screen.getByRole('button', { name: copy.menu }))
++  expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([copy.settings, copy.docs, copy.signIn])
++  fireEvent.click(screen.getByRole('menuitem', { name: copy.docs }))
++  expect(open).toHaveBeenCalledWith('https://docs.example.com/', '_blank', 'noopener,noreferrer')
++  expect(operations.contactUs).not.toHaveBeenCalled()
++  open.mockRestore()
++})
++
+ it('reports a failed start in the login dialog, not as a sidebar alert', async () => {
+   const operations = mount({ status: 'signed-out', attempt: null })
+   cleanup()
+diff --git a/packages/client/ui-settings-account/tests/config.client.spec.ts b/packages/client/ui-settings-account/tests/config.client.spec.ts
+index aa86f35263..63c6883494 100644
+--- a/packages/client/ui-settings-account/tests/config.client.spec.ts
++++ b/packages/client/ui-settings-account/tests/config.client.spec.ts
+@@ -14,7 +14,7 @@ it('injects configured contact options and removes the listener on disposal', as
+   ctx.emit('webserver/index-inject', table)
+   expect(table).toEqual([{ kind: 'global', name: CONTACT_CONFIG_GLOBAL, value: {
+     contactFormUrl: config.contactFormUrl, contactSource: config.contactSource,
+-    bonusAckRetryDelayMs: 25, bonusAckRetryMaxDelayMs: 100, platformAccount: true,
++    bonusAckRetryDelayMs: 25, bonusAckRetryMaxDelayMs: 100, platformAccount: true, docsUrl: '',
+   } }])
+   await ctx.fiber.dispose()
+   table.length = 0

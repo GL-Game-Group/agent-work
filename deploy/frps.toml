@@ -1,0 +1,14 @@
+# frps: listens only on the compose network; Traefik brings frpc (wss) and tunnel visitors in.
+# Every login, tunnel, heartbeat and close is checked by the company service (gateway/src/tunnels.ts).
+bindAddr = "0.0.0.0"
+bindPort = 7000
+vhostHTTPPort = 8080
+log.to = "console"
+log.level = "info"
+log.disablePrintColor = true
+
+[[httpPlugins]]
+name = "agent-work"
+addr = "agent-work:8787"
+path = "/agent-work/frp/{{ .Envs.AGENT_WORK_FRP_PLUGIN_SECRET }}"
+ops = ["Login", "NewProxy", "CloseProxy", "Ping", "NewUserConn"]

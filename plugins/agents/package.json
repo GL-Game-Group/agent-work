@@ -1,0 +1,56 @@
+{
+  "name": "@agent-work/dsh-agents",
+  "description": "命令行 Agent：检测、一键安装和登录 Claude Code、Codex、Qoder CLI，以及直连模式",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "cli.js",
+    "claude.js",
+    "codex.js",
+    "adapter.js",
+    "client.js",
+    "cli-release.json",
+    "cordis.patch.yml"
+  ],
+  "license": "UNLICENSED",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "node --test test/cli.test.mjs test/claude.test.mjs",
+    "test:e2e": "node --test test/agents.e2e.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.4",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-agent-preset": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-persona": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-tool-ask-user": ">=0.2.0-rc.2 <0.3.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^24",
+    "typescript": "^7.0.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ]
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "@agent-work/dsh-workspace",
+  "description": "工作区管理：从本地文件夹或公司 GitHub 仓库新建工作区，复制为工作区（git 工作树），以及一键安装 GitHub CLI",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "git.js",
+    "client.js",
+    "gh-release.json",
+    "cordis.patch.yml"
+  ],
+  "license": "UNLICENSED",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "node --test test/git.test.mjs",
+    "test:e2e": "node --test test/workspace.e2e.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.4",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^24",
+    "typescript": "^7.0.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  }
+}

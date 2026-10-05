@@ -1,0 +1,10 @@
+# 内网穿透: one row, the Host half (index.js) with its page (client.js).
+# Needs the team bundle's company account (the `deepseekAccount` service it implements).
+- insert:
+    # A path beside this patch: the Loader keeps a bundle's own package out of its import scope.
+    - id: agent-work-tunnel
+      name: ./index.js
+      # frpc ships in bin/<platform>-<arch>/ (`pnpm --filter @agent-work/dsh-tunnel fetch-frpc`
+      # for this machine). To run another one, in the profile patch:
+      #   - id: agent-work-tunnel
+      #     config: { frpcPath: /path/to/frpc }

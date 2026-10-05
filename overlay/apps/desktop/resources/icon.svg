@@ -1,0 +1,16 @@
+<svg width="1104" height="1104" viewBox="0 0 1104 1104" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#EEF3F9"/></linearGradient>
+  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="16" flood-color="#0F1115" flood-opacity="0.22"/></filter>
+</defs>
+<rect x="40" y="40" width="1024" height="1024" rx="230" fill="url(#plate)" filter="url(#shadow)"/>
+<svg x="203.84" y="158.29" width="696.32" height="787.43" viewBox="0 0 321 363">
+<mask id="mask0_728_70" style="mask-type:luminance" maskUnits="userSpaceOnUse" x="0" y="0" width="321" height="363">
+<path d="M321 0H0V363H321V0Z" fill="white"/>
+</mask>
+<g mask="url(#mask0_728_70)">
+<path fill-rule="evenodd" clip-rule="evenodd" d="M159.85 47.04L279.27 115.83V228.63L321 252.5L320.93 92.6L159.89 0L0 92.61V278.18L146.23 362.42V137.15H67.57V177.51H104.56V292.24L41.67 255.91V115.79L159.85 47.04Z" fill="#037CF4"/>
+<path fill-rule="evenodd" clip-rule="evenodd" d="M321 278.2L173.78 363V81.23L215.44 105.02V291.71L279.33 254.88L320.99 278.2H321Z" fill="#037CF4"/>
+</g>
+</svg>
+</svg>

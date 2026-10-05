@@ -1,0 +1,18 @@
+{
+  "name": "@agent-work/dsh-team-company-plugins",
+  "description": "The company plugins page of the team bundle: its own package so the client module has exactly one Loader row",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager"]
+    }
+  }
+}

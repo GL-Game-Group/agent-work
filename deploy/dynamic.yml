@@ -1,0 +1,58 @@
+# Traefik routes (file provider: Traefik never sees the Docker socket). Every request
+# arrives through frpc-ingress from this host, so source addresses say nothing about
+# the client: nothing here is allowed by address.
+http:
+  routers:
+    company:
+      rule: Host(`agent.glgwork.com`)
+      entryPoints: [websecure]
+      service: company
+    # frps calls the company service back on this path over the compose network only
+    # (agent-work:8787, not through Traefik); publicly it is always 403.
+    company-frp-callback:
+      rule: Host(`agent.glgwork.com`) && PathPrefix(`/agent-work/frp/`)
+      priority: 1000
+      entryPoints: [websecure]
+      middlewares: [deny-all]
+      service: company
+    # frpc in GL Work: wss://frp.glgwork.com
+    frp:
+      rule: Host(`frp.glgwork.com`)
+      entryPoints: [websecure]
+      service: frps-control
+    # Members' web tunnels: <name>-<member>.glwork.app.
+    tunnels:
+      rule: HostRegexp(`^[a-z0-9-]+\.glwork\.app$`)
+      entryPoints: [websecure]
+      service: frps-vhost
+
+  middlewares:
+    # Matches no address that can reach Traefik: 403 for everyone.
+    deny-all:
+      ipAllowList:
+        sourceRange: ['0.0.0.0/32']
+
+  services:
+    company:
+      loadBalancer:
+        servers: [{ url: 'http://agent-work:8787' }]
+    frps-control:
+      loadBalancer:
+        servers: [{ url: 'http://frps:7000' }]
+    frps-vhost:
+      loadBalancer:
+        servers: [{ url: 'http://frps:8080' }]
+
+# Cloudflare origin certificates (Cloudflare proxies these names).
+# deploy/certs/ is not committed; README → 部署公司服务 says how they are issued.
+tls:
+  certificates:
+    - certFile: /certs/glgwork.com.pem
+      keyFile: /certs/glgwork.com.key
+    - certFile: /certs/glwork.app.pem
+      keyFile: /certs/glwork.app.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/glgwork.com.pem
+        keyFile: /certs/glgwork.com.key

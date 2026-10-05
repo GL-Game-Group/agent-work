@@ -1,0 +1,181 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Fri, 2 Oct 2026 01:22:55 +0800
+Subject: [PATCH 01/11] desktop: read productName from DSH_DESKTOP_PRODUCT_NAME
+
+The platform dotenv file owns the value like the other release settings and it defaults to 'DeepSeek Harness'. resolveDesktopProductName() names the dsh:// protocol registration, and packaging, notarization, and the packaged-runtime smoke locate '<productName>.app' through it. The macOS dsh CLI launcher reads CFBundleExecutable instead of a fixed executable name.
+
+diff --git a/apps/desktop/cli/dsh b/apps/desktop/cli/dsh
+index ee657a3d0b..cf1bf0405d 100644
+--- a/apps/desktop/cli/dsh
++++ b/apps/desktop/cli/dsh
+@@ -11,4 +11,5 @@ while [ -L "$launcher" ]; do
+   esac
+ done
+ resources=$(CDPATH= cd -- "$(dirname -- "$launcher")/../../.." && pwd -P)
+-ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/DeepSeek Harness" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
++executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$resources/../Info.plist")
++ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/$executable" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
+diff --git a/apps/desktop/scripts/desktop-package-environment.mjs b/apps/desktop/scripts/desktop-package-environment.mjs
+index 3addf3ff65..6145fda3b1 100644
+--- a/apps/desktop/scripts/desktop-package-environment.mjs
++++ b/apps/desktop/scripts/desktop-package-environment.mjs
+@@ -13,10 +13,10 @@ import { resolveWindowsSignatureCacheDirectory } from './windows-signature-cache
+ import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
+ 
+ const APP_ROOT = fileURLToPath(new URL('..', import.meta.url))
+-const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
++const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
+ const WINDOWS_SETTING = /^DSH_DESKTOP_WINDOWS_(?:CER_FILE|SIGNTOOL|KEY_CONTAINER|TOKEN_PIN|SIGNATURE_CACHE_DIR|SIGNATURE_CACHE_CONCURRENCY)$/u
+ const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|PACK_CONCURRENCY|DOWNLOAD_PROXY|NOTARIZATION_PROXY)|APPLE_(?:API_KEY|API_KEY_ID|API_ISSUER|ID|APP_SPECIFIC_PASSWORD|TEAM_ID|KEYCHAIN|KEYCHAIN_PROFILE)|CSC_(?:LINK|KEY_PASSWORD))$/u
+-const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
++const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
+ const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGNTOOL', 'APPLE_API_KEY', 'APPLE_KEYCHAIN', 'CSC_LINK']
+ 
+ /**
+diff --git a/apps/desktop/scripts/desktop-release-environment.d.mts b/apps/desktop/scripts/desktop-release-environment.d.mts
+index 26190ab2b8..acb67360dd 100644
+--- a/apps/desktop/scripts/desktop-release-environment.d.mts
++++ b/apps/desktop/scripts/desktop-release-environment.d.mts
+@@ -49,6 +49,14 @@ export type MacOSNotarizationEnvironment =
+  */
+ export function resolveDesktopAppId(env: NodeJS.ProcessEnv): string
+ 
++/**
++ * Resolve the installed application's name shared by every platform target.
++ * electron-builder derives the bundle and executable names from it.
++ * @param env - Packaging environment.
++ * @returns Product name; `DeepSeek Harness` when the setting is absent or empty.
++ */
++export function resolveDesktopProductName(env: NodeJS.ProcessEnv): string
++
+ /**
+  * Resolve the npm registry used to materialize the bundled runtime and its external dependencies.
+  * @param env - Packaging environment.
+diff --git a/apps/desktop/scripts/desktop-release-environment.mjs b/apps/desktop/scripts/desktop-release-environment.mjs
+index 635a57a3c9..d9efaee12f 100644
+--- a/apps/desktop/scripts/desktop-release-environment.mjs
++++ b/apps/desktop/scripts/desktop-release-environment.mjs
+@@ -55,6 +55,16 @@ export function resolveNpmRegistry(env) {
+   return url.origin
+ }
+ 
++/**
++ * Resolve the installed application's name shared by every platform target.
++ * electron-builder derives the bundle and executable names from it.
++ * @param {NodeJS.ProcessEnv} env - Packaging environment.
++ * @returns {string} Product name; `DeepSeek Harness` when the setting is absent or empty.
++ */
++export function resolveDesktopProductName(env) {
++  return env.DSH_DESKTOP_PRODUCT_NAME || 'DeepSeek Harness'
++}
++
+ /**
+  * Resolve and validate the application identifier shared by every platform target.
+  * @param {NodeJS.ProcessEnv} env - Packaging environment.
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index 1fb787803c..7b06625ba1 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process'
+ import { promisify } from 'node:util'
+ import {
+   resolveDesktopAppId,
++  resolveDesktopProductName,
+   resolveMacOSNotarizationEnvironment,
+   resolveMacOSSigningEnvironment,
+ } from './desktop-release-environment.mjs'
+@@ -51,6 +52,7 @@ export function createElectronBuilderConfig(
+   preparedRuntimeVersion = undefined,
+ ) {
+   const appId = resolveDesktopAppId(env)
++  const productName = resolveDesktopProductName(env)
+   const policy = resolveDesktopPolicyEnvironment(env)
+   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
+   const resolvedPlatform = targetPlatform ?? hostPlatform
+@@ -99,14 +101,14 @@ export function createElectronBuilderConfig(
+   const packaged = resolveDesktopBuildCommit(env)
+   return {
+     appId,
+-    protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
++    protocols: [{ name: productName, schemes: ['dsh'] }],
+     extraMetadata: {
+       dshDesktopAppId: appId,
+       dshMandatoryUpdatePolicy: policy,
+       ...buildVersion === productVersion ? {} : { version: buildVersion },
+       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
+     },
+-    productName: 'DeepSeek Harness',
++    productName,
+     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
+     artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${unsigned ? '-unsigned' : ''}.\${ext}`,
+     directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
+diff --git a/apps/desktop/scripts/package-macos.ts b/apps/desktop/scripts/package-macos.ts
+index c1a2cb5c71..1c4a0ca575 100644
+--- a/apps/desktop/scripts/package-macos.ts
++++ b/apps/desktop/scripts/package-macos.ts
+@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
+ import { notarizeMacOS } from './notarize-macos.mjs'
+ import { packagingStep } from './packaging-step.mjs'
+ import {
++  resolveDesktopProductName,
+   resolveMacOSNotarizationEnvironment,
+   resolveMacOSSigningEnvironment,
+ } from './desktop-release-environment.mjs'
+@@ -78,7 +79,7 @@ export async function packageMacOSArtifacts(
+   const expected = resolveMacOSSigningEnvironment(environment)
+   const credentials = resolveMacOSNotarizationEnvironment(environment)
+   const update = resolveDesktopAutoUpdateConfig(environment, 'darwin', arch)
+-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
++  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', `${resolveDesktopProductName(environment)}.app`)
+   const root = await mkdtemp(join(dirname(artifactsRoot), 'notarization-'))
+   const zipApp = join(root, 'zip', basename(appPath))
+   const dmgApp = join(root, 'dmg', basename(appPath))
+diff --git a/apps/desktop/scripts/package-target.ts b/apps/desktop/scripts/package-target.ts
+index 62f4fcbbb2..62dede89d8 100644
+--- a/apps/desktop/scripts/package-target.ts
++++ b/apps/desktop/scripts/package-target.ts
+@@ -18,7 +18,7 @@ import { withMacOSSigningKeychain } from './macos-signing-keychain.mjs'
+ import { macOSDownloadEnvironment, resolveMacOSPackageSettings } from './macos-package-settings.mjs'
+ import { packagingErrorDetails, packagingStep } from './packaging-step.mjs'
+ import { notarizeMacOS } from './notarize-macos.mjs'
+-import { resolveMacOSNotarizationEnvironment } from './desktop-release-environment.mjs'
++import { resolveDesktopProductName, resolveMacOSNotarizationEnvironment } from './desktop-release-environment.mjs'
+ import { DESKTOP_BUILD_VERSION_ENV, resolveDesktopBuildVersion, validateDesktopBuildVersion } from './desktop-build-version.mjs'
+ import { suggestDesktopBuildVersion } from './desktop-build-version-discovery.ts'
+ import { desktopBuildCommitEnvironment, readDesktopBuildCommit, resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
+@@ -489,7 +489,7 @@ export async function packageTarget(
+   } else if (target.platform === 'darwin') {
+     await execute([...desktopElectronBuilderArguments(target, true), '--config.mac.notarize=false'], electronBuilderEnv)
+     await execute(['exec', 'tsx', 'scripts/smoke-packaged-runtime.ts'], targetEnv)
+-    const appPath = join(buildPaths.artifacts, target.arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
++    const appPath = join(buildPaths.artifacts, target.arch === 'arm64' ? 'mac-arm64' : 'mac', `${resolveDesktopProductName(environment)}.app`)
+     await withMacOSNotarizationProxy(mac?.notarizationProxy,
+       () => notarizeMacOS({ appPath, ...resolveMacOSNotarizationEnvironment(environment) }), undefined, undefined, proxyEvent)
+   } else {
+diff --git a/apps/desktop/scripts/smoke-packaged-runtime.ts b/apps/desktop/scripts/smoke-packaged-runtime.ts
+index 106830b5ad..a67fe5fae8 100644
+--- a/apps/desktop/scripts/smoke-packaged-runtime.ts
++++ b/apps/desktop/scripts/smoke-packaged-runtime.ts
+@@ -6,17 +6,19 @@ import { readDesktopRuntime, verifyDesktopRuntime } from '../src/runtime-tree.ts
+ import { verifyWindowsCode } from './windows-runtime-signature.mjs'
+ import { smokePreparedRuntime } from './smoke-prepared-runtime.ts'
+ import { resolveDesktopPackageTarget } from './package-target.ts'
++import { resolveDesktopProductName } from './desktop-release-environment.mjs'
+ 
+ const paths = resolveDesktopTargetBuildPaths()
+ const { values } = parseArgs({ options: { unsigned: { type: 'boolean', default: false } }, allowPositionals: false })
+ const target = resolveDesktopBuildTarget()
+ const windows = target === 'win-x64'
++const productName = resolveDesktopProductName(process.env)
+ if (values.unsigned && !windows) throw new Error('desktop smoke: unsigned artifacts require Windows')
+ const artifacts = values.unsigned ? paths.unsignedArtifacts : paths.artifacts
+ const application = windows ? join(artifacts, 'win-unpacked')
+-  : join(artifacts, target === 'mac-arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app', 'Contents')
++  : join(artifacts, target === 'mac-arm64' ? 'mac-arm64' : 'mac', `${productName}.app`, 'Contents')
+ const resources = join(application, windows ? 'resources' : 'Resources')
+-const executable = windows ? join(application, 'DeepSeek Harness.exe') : join(application, 'MacOS', 'DeepSeek Harness')
++const executable = windows ? join(application, `${productName}.exe`) : join(application, 'MacOS', productName)
+ const descriptor = await verifyDesktopRuntime(paths.dsh, readDesktopRuntime(paths.dsh).release.version,
+   resolveDesktopPackageTarget(target))
+ if (windows && !values.unsigned) await verifyWindowsCode(application)

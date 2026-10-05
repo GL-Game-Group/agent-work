@@ -1,0 +1,6 @@
+packages:
+  - plugins/*
+  - gateway
+  - admin
+allowBuilds:
+  esbuild: true

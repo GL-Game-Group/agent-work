@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Fri, 2 Oct 2026 08:17:43 +0800
+Subject: [PATCH 07/11] client: brand marks and hero copy from brand modules
+
+ui-brand-official reads product.ts: with a mark and a name it fills the sidebar brand slots with them instead of the official whale and wordmark. ui-conversation reads brand.ts for the empty hero's fallback mark, its headline, and whether it shows the preview badge. The shipped files keep the official presentation; a rebranded build replaces them.
+
+diff --git a/packages/client/ui-brand-official/src/client/Brand.tsx b/packages/client/ui-brand-official/src/client/Brand.tsx
+index 9ac6dd7ce2..7a6451de2b 100644
+--- a/packages/client/ui-brand-official/src/client/Brand.tsx
++++ b/packages/client/ui-brand-official/src/client/Brand.tsx
+@@ -1,5 +1,6 @@
+ import { BrandWordmark, FishLogo } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { SidebarBrandMarkOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar/client'
++import { brand } from './product.ts'
+ 
+ /**
+  * Render the official mark with the presentation requested by its host surface.
+@@ -17,3 +18,20 @@ export function OfficialBrandMark({ size }: SidebarBrandMarkOwnerProps) {
+ export function OfficialBrandName() {
+   return <BrandWordmark includeMark={false} />
+ }
++
++/**
++ * Render a rebranded build's mark from brand.ts.
++ * @param props - Host-supplied mark presentation.
++ * @returns the product mark as an image.
++ */
++export function ProductBrandMark({ size }: SidebarBrandMarkOwnerProps) {
++  return <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(brand.markSvg ?? '')}`} width={size} height={size} alt="" style={{ objectFit: 'contain' }} />
++}
++
++/**
++ * Render a rebranded build's name from brand.ts.
++ * @returns the product name set as the sidebar wordmark.
++ */
++export function ProductBrandName() {
++  return <span style={{ fontSize: 17, fontWeight: 600, letterSpacing: '0.01em', whiteSpace: 'nowrap' }}>{brand.productName}</span>
++}
+diff --git a/packages/client/ui-brand-official/src/client/index.ts b/packages/client/ui-brand-official/src/client/index.ts
+index 332a5f6007..21a5371a99 100644
+--- a/packages/client/ui-brand-official/src/client/index.ts
++++ b/packages/client/ui-brand-official/src/client/index.ts
+@@ -2,7 +2,8 @@
+ import type { Context as ClientContext } from '@deepseek-ai/cordis'
+ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+-import { OfficialBrandMark, OfficialBrandName } from './Brand.tsx'
++import { brand } from './product.ts'
++import { OfficialBrandMark, OfficialBrandName, ProductBrandMark, ProductBrandName } from './Brand.tsx'
+ 
+ /** Required service: the UI slot registry. */
+ export const inject = ['slots']
+@@ -17,7 +18,9 @@ export function apply(ctx: ClientContext): void {
+   if (process.env.DSH_CLIENT_BUILD_PROFILE !== 'official') return
+   ctx.slots.inject('sidebar.brand.mark', () =>
+     ctx.slots.inject('sidebar.brand.name', function* () {
+-      yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
+-      yield ctx.slots.register({ name: 'sidebar.brand.name' }, OfficialBrandName)
++      // A rebranded build (brand.ts with a mark) shows its own mark and name.
++      const rebranded = brand.markSvg !== null && brand.productName !== null
++      yield ctx.slots.register({ name: 'sidebar.brand.mark' }, rebranded ? ProductBrandMark : OfficialBrandMark)
++      yield ctx.slots.register({ name: 'sidebar.brand.name' }, rebranded ? ProductBrandName : OfficialBrandName)
+     }))
+ }
+diff --git a/packages/client/ui-brand-official/src/client/product.ts b/packages/client/ui-brand-official/src/client/product.ts
+new file mode 100644
+index 0000000000..756d778521
+--- /dev/null
++++ b/packages/client/ui-brand-official/src/client/product.ts
+@@ -0,0 +1,7 @@
++/** Product identity in the sidebar brand slots. A rebranded build replaces this file. */
++export const brand: {
++  /** Name beside the sidebar mark; null keeps the official wordmark. */
++  readonly productName: string | null
++  /** SVG markup of the sidebar mark; null keeps the official whale. */
++  readonly markSvg: string | null
++} = { productName: null, markSvg: null }
+diff --git a/packages/client/ui-conversation/src/client/brand.ts b/packages/client/ui-conversation/src/client/brand.ts
+new file mode 100644
+index 0000000000..53c94e7400
+--- /dev/null
++++ b/packages/client/ui-conversation/src/client/brand.ts
+@@ -0,0 +1,9 @@
++/** Product identity in the empty conversation hero. A rebranded build replaces this file. */
++export const brand: {
++  /** SVG markup of the hero mark; null keeps the animated fish. */
++  readonly markSvg: string | null
++  /** Hero headline per language; null keeps the shipped copy. */
++  readonly heroHeadline: { readonly en: string; readonly zh: string } | null
++  /** Whether the hero shows the preview badge. */
++  readonly heroPreview: boolean
++} = { markSvg: null, heroHeadline: null, heroPreview: true }
+diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
+index 78b26f7ab6..12546b8cb3 100644
+--- a/packages/client/ui-conversation/src/client/locales.ts
++++ b/packages/client/ui-conversation/src/client/locales.ts
+@@ -1,5 +1,7 @@
+ /** `conversation` namespace dictionaries. */
+ 
++import { brand } from './brand.ts'
++
+ /** Dictionary namespace owned by this plugin. */
+ export const NS = 'conversation'
+ 
+@@ -74,7 +76,7 @@ export const zh = {
+   'settings.enter.description': '智能体运行时 Enter 键和发送按钮的行为；Cmd/Ctrl+Enter 使用另一行为',
+   'settings.enter.queue': '排队发送',
+   'settings.enter.steer': '插话发送',
+-  'hero.headline': '探索未至之境',
++  'hero.headline': brand.heroHeadline?.zh ?? '探索未至之境',
+   'hero.preview': '预览版',
+   'hero.chooseWorkspace': '选择工作区',
+   'session.hierarchy': '会话层级',
+@@ -450,7 +452,7 @@ export const en = {
+   'settings.enter.description': 'What Enter and the Send button do while the agent is running; Cmd/Ctrl+Enter uses the other behavior',
+   'settings.enter.queue': 'Queue',
+   'settings.enter.steer': 'Steer',
+-  'hero.headline': 'Into the Unknown',
++  'hero.headline': brand.heroHeadline?.en ?? 'Into the Unknown',
+   'hero.preview': 'Preview',
+   'hero.chooseWorkspace': 'Choose workspace',
+   'session.hierarchy': 'Session hierarchy',
+diff --git a/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx b/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx
+index 40df87269b..2b194b54fd 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx
++++ b/packages/client/ui-conversation/src/client/skeleton/EmptyHero.tsx
+@@ -9,6 +9,7 @@ import {
+ import { workspaceTitleOf } from '@deepseek-ai/dsh-util-workspace-path'
+ import type { ConversationContentProps } from '../contract/slots.ts'
+ import css from './HeroShell.module.css'
++import { brand } from '../brand.ts'
+ 
+ /** The owner's locale seat type, passed to hero chrome as a plain prop. */
+ type HeroTranslate = ConversationContentProps['t']
+@@ -146,13 +147,15 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
+             onMouseLeave={() => { setHovering(false) }}
+           >
+             {renderSlot('conversation.hero.brand.mark', { size: 34, className: css.fish }, {
+-              fallback: <HeroFish hovering={hovering} />,
++              fallback: brand.markSvg === null
++                ? <HeroFish hovering={hovering} />
++                : <img className={css.fish} src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(brand.markSvg)}`} width={34} height={34} alt="" style={{ objectFit: 'contain' }} />,
+             })}
+           </span>
+           <span className={css.titleGroup}>
+             {/* Own element: keeps the headline text addressable apart from the badge. */}
+             <span>{t('hero.headline')}</span>
+-            <span className={css.previewBadge}>{t('hero.preview')}</span>
++            {brand.heroPreview && <span className={css.previewBadge}>{t('hero.preview')}</span>}
+           </span>
+         </div>
+         <div className={css.body}>

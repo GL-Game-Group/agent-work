@@ -1,0 +1,85 @@
+# The company server: Traefik (HTTPS for every name), the company service, frps for
+# members' tunnels, and frpc-ingress. Ports 80 and 443 of this host belong to the
+# infrastructure frps already running there (systemd, /etc/frp/frps.toml: Cloudflare →
+# :443 → routed by SNI); frpc-ingress registers this stack's names with it, and Traefik
+# listens on 127.0.0.1:8443 only. Secrets come from deploy/.env (see .env.example);
+# Cloudflare origin certificates from deploy/certs/.
+#
+#   docker compose up -d --build      # first start; later through update.sh
+name: agent-work
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: '5' }
+
+services:
+  traefik:
+    image: traefik:v3.7.13
+    restart: unless-stopped
+    logging: *logging
+    command:
+      - --entrypoints.websecure.address=:443
+      - --entrypoints.websecure.http.tls=true
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --log.level=INFO
+    ports:
+      # Reached only through frpc-ingress (TLS passthrough from the infrastructure frps).
+      - '127.0.0.1:8443:443'
+    volumes:
+      - ./dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - ./certs:/certs:ro
+
+  agent-work:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: agent-work:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    logging: *logging
+    env_file: .env
+    environment:
+      AGENT_WORK_PUBLIC_ORIGIN: https://agent.glgwork.com
+      AGENT_WORK_GATEWAY_HOST: 0.0.0.0
+      AGENT_WORK_GATEWAY_PORT: '8787'
+      AGENT_WORK_TRUST_PROXY: '1'
+      # Behind Cloudflare and frp's TLS passthrough, Traefik sees only this host; Cloudflare names the client.
+      AGENT_WORK_CLIENT_IP_HEADER: cf-connecting-ip
+      AGENT_WORK_DB: /data/gateway.db
+      AGENT_WORK_FRPS_ADDR: frp.glgwork.com
+      AGENT_WORK_FRPS_PORT: '443'
+      AGENT_WORK_FRPS_PROTOCOL: wss
+      # 手机远程: the relay reaches members' Macs through frps's HTTP port on this network only.
+      AGENT_WORK_FRPS_VHOST: http://frps:8080
+    volumes:
+      - data:/data
+      - ${BACKUP_DIR:-/opt/agent-work-backups}:/backups
+
+  frps:
+    image: fatedier/frps:v0.71.0
+    restart: unless-stopped
+    logging: *logging
+    command: ['-c', '/etc/frp/frps.toml']
+    environment:
+      AGENT_WORK_FRP_PLUGIN_SECRET: ${AGENT_WORK_FRP_PLUGIN_SECRET:?set AGENT_WORK_FRP_PLUGIN_SECRET in deploy/.env}
+    volumes:
+      - ./frps.toml:/etc/frp/frps.toml:ro
+    depends_on:
+      agent-work: { condition: service_healthy }
+
+  # Publishes agent.glgwork.com, frp.glgwork.com and *.glwork.app (members' web tunnels)
+  # through the infrastructure frps on this host (HTTPS by SNI, TLS passthrough to Traefik).
+  frpc-ingress:
+    image: fatedier/frpc:v0.71.0
+    restart: unless-stopped
+    logging: *logging
+    network_mode: host
+    command: ['-c', '/etc/frp/frpc.toml']
+    environment:
+      FRP_INGRESS_TOKEN: ${FRP_INGRESS_TOKEN:?set FRP_INGRESS_TOKEN in deploy/.env}
+      FRP_INGRESS_SERVER_PORT: ${FRP_INGRESS_SERVER_PORT:-80}
+    volumes:
+      - ./frpc-ingress.toml:/etc/frp/frpc.toml:ro
+    depends_on: [traefik]
+
+volumes:
+  data:

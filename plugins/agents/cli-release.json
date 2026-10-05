@@ -1,0 +1,15 @@
+{
+  "comment": "The Codex CLI GL Work installs when a member has none: the standalone binary of an openai/codex release, checked against the sha256 GitHub publishes for each asset.",
+  "codex": {
+    "version": "0.160.0",
+    "url": "https://github.com/openai/codex/releases/download/rust-v{version}/{asset}",
+    "targets": {
+      "darwin-arm64": { "asset": "codex-aarch64-apple-darwin.tar.gz", "binary": "codex-aarch64-apple-darwin", "sha256": "07c3c7ca376a8f791115342f53138dda37e97cfa29b8125d0652d93784894b5d" },
+      "darwin-x64": { "asset": "codex-x86_64-apple-darwin.tar.gz", "binary": "codex-x86_64-apple-darwin", "sha256": "a50c10606e4e81b8dd2f7b6bab635595aabc773c84cf2071773fbaf067825fbf" },
+      "win32-x64": { "asset": "codex-x86_64-pc-windows-msvc.exe.zip", "binary": "codex-x86_64-pc-windows-msvc.exe", "sha256": "aad5cf364c873b148e462b58fd06ad7b37fcab9b996be67133386b9322df26bb" },
+      "win32-arm64": { "asset": "codex-aarch64-pc-windows-msvc.exe.zip", "binary": "codex-aarch64-pc-windows-msvc.exe", "sha256": "32dd0acaf532fc42a60bda9185794418329cf682e2657ee0ee58686f21d875f5" },
+      "linux-x64": { "asset": "codex-x86_64-unknown-linux-musl.tar.gz", "binary": "codex-x86_64-unknown-linux-musl", "sha256": "306865417d4ee7a927785852910a527f41e1e159add390ac5ae3accb67d44a13" },
+      "linux-arm64": { "asset": "codex-aarch64-unknown-linux-musl.tar.gz", "binary": "codex-aarch64-unknown-linux-musl", "sha256": "883620139925f677e5a12c95ba87a1d7f421388ebb797b1c10aba42a04ede9d7" }
+    }
+  }
+}

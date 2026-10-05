@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Fetch the pinned upstream tag
+        run: git -C upstream fetch --depth=1 origin "refs/tags/$(node -p "require('./upstream.json').tag"):refs/tags/$(node -p "require('./upstream.json').tag")"
+      - name: Upstream is read-only and matches upstream.json
+        run: node scripts/check-upstream.mjs
+      - name: Patches apply to the pinned upstream
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@localhost
+          node scripts/stage.mjs
+
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --filter @agent-work/gateway
+      - run: pnpm --filter @agent-work/gateway typecheck
+      - run: pnpm --filter @agent-work/gateway test
+
+  admin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --filter @agent-work/admin...
+      - run: pnpm --filter @agent-work/admin check
+      - run: pnpm --filter @agent-work/admin build
+
+  tunnel-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --filter @agent-work/dsh-tunnel
+      - run: pnpm --filter @agent-work/dsh-tunnel typecheck
+      - run: pnpm --filter @agent-work/dsh-tunnel test
+
+  workspace-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --filter @agent-work/dsh-workspace
+      - run: pnpm --filter @agent-work/dsh-workspace typecheck
+      - run: pnpm --filter @agent-work/dsh-workspace test
+
+  agents-plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile --filter @agent-work/dsh-agents
+      - run: pnpm --filter @agent-work/dsh-agents typecheck
+      - run: pnpm --filter @agent-work/dsh-agents test

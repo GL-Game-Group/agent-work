@@ -1,0 +1,347 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Fri, 2 Oct 2026 08:03:14 +0800
+Subject: [PATCH 06/11] desktop: brand copy from brand.ts
+
+The Desktop shell's menu, dialog and welcome copy, and the account settings and onboarding copy, take the product name, account provider and account name, and the welcome tagline from a brand.ts data module next to them. The shipped files hold the official copy, so the default build is unchanged; a rebranded build replaces both brand.ts files. An official client build titles its window with DSH_DESKTOP_PRODUCT_NAME when it is set.
+
+diff --git a/apps/desktop/src/brand.ts b/apps/desktop/src/brand.ts
+new file mode 100644
+index 0000000000..97c9a60d53
+--- /dev/null
++++ b/apps/desktop/src/brand.ts
+@@ -0,0 +1,7 @@
++/** Product identity in Desktop shell copy. A rebranded build replaces this file. */
++export const brand = {
++  productName: 'DeepSeek Harness',
++  accountProvider: 'DeepSeek',
++  accountName: { en: 'DeepSeek account', zh: 'DeepSeek 账号' },
++  welcomeDescription: { en: 'Build potential. Explore intelligence.', zh: '组装无限可能，共探智能上限' },
++} as const
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index 5d9d4607c7..807879dafa 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -1,5 +1,7 @@
+ /** Typed English and Chinese copy owned by the Electron shell. */
+ 
++import { brand } from './brand.ts'
++
+ export const en = {
+   cliCommandMenu: 'Manage dsh Command…',
+   cliCommandTitle: 'Manage dsh Command',
+@@ -31,17 +33,17 @@ export const en = {
+   application: 'Application',
+   fileMenu: 'File',
+   closePage: 'Close Page or Window',
+-  aboutMenu: 'About DeepSeek Harness',
+-  aboutProduct: 'DeepSeek Harness',
++  aboutMenu: `About ${brand.productName}`,
++  aboutProduct: `${brand.productName}`,
+   aboutVersion: 'Version V{version}',
+-  hideApplication: 'Hide DeepSeek Harness',
++  hideApplication: `Hide ${brand.productName}`,
+   hideOtherApplications: 'Hide Others',
+   showAllApplications: 'Show All',
+-  quitApplication: 'Quit DeepSeek Harness',
+-  openApplication: 'Open DeepSeek Harness',
++  quitApplication: `Quit ${brand.productName}`,
++  openApplication: `Open ${brand.productName}`,
+   quit: 'Quit',
+   cancel: 'Cancel',
+-  quitTitle: 'Quit DeepSeek Harness?',
++  quitTitle: `Quit ${brand.productName}?`,
+   quitActiveTasks: 'Running tasks will be interrupted.',
+   quitScheduledTasks: 'Scheduled tasks will not run while the app is closed.',
+   quitActiveAndScheduledTasks: 'Running tasks will be interrupted, and scheduled tasks will not run while the app is closed.',
+@@ -56,7 +58,7 @@ export const en = {
+   copy: 'Copy',
+   paste: 'Paste',
+   selectAll: 'Select All',
+-  startupFailed: 'DeepSeek Harness is unavailable',
++  startupFailed: `${brand.productName} is unavailable`,
+   fatalSummary: 'The application could not start or stopped unexpectedly.',
+   startupAddressInUse: 'Another DSH instance (such as dsh web or the desktop app) is running. They cannot start at the same time. Quit the other running DSH instance, then restart.',
+   diagnosticTruncated: '… Error details shortened.',
+@@ -66,12 +68,12 @@ export const en = {
+   restartApplication: 'Restart',
+   recoveryOperationFailed: 'The recovery operation failed',
+   disableThirdPartyPlugins: 'Disable third-party plugins, back up profile patch, and restart',
+-  welcomeTitle: 'DeepSeek Harness',
+-  welcomeBrand: 'DeepSeek Harness',
++  welcomeTitle: `${brand.productName}`,
++  welcomeBrand: `${brand.productName}`,
+   welcomeTaglineBefore: 'Welcome to ',
+-  welcomeTaglineBrand: 'DeepSeek Harness',
++  welcomeTaglineBrand: `${brand.productName}`,
+   welcomeTaglineAfter: '',
+-  welcomeDescription: 'Build potential. Explore intelligence.',
++  welcomeDescription: brand.welcomeDescription.en,
+   welcomeAuthStarting: 'Opening sign in…',
+   welcomeAuthWaiting: 'Browser didn’t open automatically?',
+   welcomeAuthWaitingDescription: 'Copy the sign-in link and open it in your browser to sign in.',
+@@ -130,7 +132,7 @@ export const en = {
+   updateTasksUnavailable: 'Task status is unavailable. Try updating again when the workspace is ready.',
+   updateStopFailed: 'Could not safely stop the tasks. The update has not been installed. Please try again later.',
+   updateTechnicalDetails: 'View technical details',
+-  updateTitle: 'DeepSeek Harness Update',
++  updateTitle: `${brand.productName} Update`,
+   updateAvailable: 'New version available: {version}',
+   updateDetail: 'Once the download is complete, you can install the update and restart the app.',
+   installAndRestart: 'Install and Restart',
+@@ -202,17 +204,17 @@ export const zh = {
+   application: '应用',
+   fileMenu: '文件',
+   closePage: '关闭页面或窗口',
+-  aboutMenu: '关于 DeepSeek Harness',
+-  aboutProduct: 'DeepSeek Harness',
++  aboutMenu: `关于 ${brand.productName}`,
++  aboutProduct: `${brand.productName}`,
+   aboutVersion: '版本 V{version}',
+-  hideApplication: '隐藏 DeepSeek Harness',
++  hideApplication: `隐藏 ${brand.productName}`,
+   hideOtherApplications: '隐藏其他',
+   showAllApplications: '显示全部',
+-  quitApplication: '退出 DeepSeek Harness',
+-  openApplication: '打开 DeepSeek Harness',
++  quitApplication: `退出 ${brand.productName}`,
++  openApplication: `打开 ${brand.productName}`,
+   quit: '退出',
+   cancel: '取消',
+-  quitTitle: '退出 DeepSeek Harness？',
++  quitTitle: `退出 ${brand.productName}？`,
+   quitActiveTasks: '当前正在运行的任务将会中断',
+   quitScheduledTasks: '应用关闭期间，定时任务不会运行',
+   quitActiveAndScheduledTasks: '当前正在运行的任务将会中断，且应用关闭期间，定时任务不会运行',
+@@ -227,7 +229,7 @@ export const zh = {
+   copy: '复制',
+   paste: '粘贴',
+   selectAll: '全选',
+-  startupFailed: 'DeepSeek Harness 无法使用',
++  startupFailed: `${brand.productName} 无法使用`,
+   fatalSummary: '应用无法启动或已意外停止。',
+   startupAddressInUse: '有其他正在运行的 DSH（如其他 dsh web、桌面端），无法同时启动，请退出其他正在运行的 DSH 后重启。',
+   diagnosticTruncated: '… 错误详情已截短。',
+@@ -237,12 +239,12 @@ export const zh = {
+   restartApplication: '重启',
+   recoveryOperationFailed: '恢复操作失败',
+   disableThirdPartyPlugins: '禁用第三方插件、备份 profile patch 并重启',
+-  welcomeTitle: 'DeepSeek Harness',
+-  welcomeBrand: 'DeepSeek Harness',
++  welcomeTitle: `${brand.productName}`,
++  welcomeBrand: `${brand.productName}`,
+   welcomeTaglineBefore: '欢迎使用 ',
+-  welcomeTaglineBrand: 'DeepSeek Harness',
++  welcomeTaglineBrand: `${brand.productName}`,
+   welcomeTaglineAfter: '',
+-  welcomeDescription: '组装无限可能，共探智能上限',
++  welcomeDescription: brand.welcomeDescription.zh,
+   welcomeAuthStarting: '正在打开登录…',
+   welcomeAuthWaiting: '没有自动打开浏览器？',
+   welcomeAuthWaitingDescription: '复制登录链接，用浏览器手动打开完成登录',
+@@ -301,7 +303,7 @@ export const zh = {
+   updateTasksUnavailable: '无法确认任务状态，请在工作区就绪后重试更新。',
+   updateStopFailed: '未能安全停止任务，更新尚未安装，请稍后重试。',
+   updateTechnicalDetails: '查看技术详情',
+-  updateTitle: 'DeepSeek Harness 更新',
++  updateTitle: `${brand.productName} 更新`,
+   updateAvailable: '发现新版本 {version}',
+   updateDetail: '下载完成后，可安装并重启应用。',
+   installAndRestart: '安装并重启',
+diff --git a/apps/desktop/tsconfig.client.json b/apps/desktop/tsconfig.client.json
+index 3de33f06dd..2d4ab0c080 100644
+--- a/apps/desktop/tsconfig.client.json
++++ b/apps/desktop/tsconfig.client.json
+@@ -7,6 +7,7 @@
+   "include": [
+     "src/client",
+     "src/welcome-api.ts",
++    "src/brand.ts",
+     "src/locale.ts"
+   ],
+   "references": [
+diff --git a/packages/client/ui-settings-account/src/client/brand.ts b/packages/client/ui-settings-account/src/client/brand.ts
+new file mode 100644
+index 0000000000..1f5d3c4010
+--- /dev/null
++++ b/packages/client/ui-settings-account/src/client/brand.ts
+@@ -0,0 +1,7 @@
++/** Product identity in account and onboarding copy. A rebranded build replaces this file. */
++export const brand = {
++  productName: 'DeepSeek Harness',
++  accountProvider: 'DeepSeek',
++  accountName: { en: 'DeepSeek account', zh: 'DeepSeek 账号' },
++  welcomeDescription: { en: 'Build potential. Explore intelligence.', zh: '组装无限可能，共探智能上限' },
++} as const
+diff --git a/packages/client/ui-settings-account/src/client/locales.ts b/packages/client/ui-settings-account/src/client/locales.ts
+index b4f1eb0c4e..990a485c60 100644
+--- a/packages/client/ui-settings-account/src/client/locales.ts
++++ b/packages/client/ui-settings-account/src/client/locales.ts
+@@ -1,4 +1,5 @@
+ /** Account settings copy, owned by the account feature. */
++import { brand } from './brand.ts'
+ import { onboardingCopy, onboardingEnglishCopy } from './locales/onboarding.ts'
+ 
+ /** English account dictionary. */
+@@ -7,15 +8,15 @@ export const en = {
+   sessionExpired: 'You have signed out of your account, please log in again.',
+   ...onboardingEnglishCopy,
+   close: 'Close', addApiKey: 'Add API Key', retry: 'Sign in again',
+-  loginTitle: 'Get started', loginDescription: 'Sign in to your DeepSeek account or add an API Key to get started. Your projects and files are stored locally.',
++  loginTitle: 'Get started', loginDescription: `Sign in to your ${brand.accountName.en} or add an API Key to get started. Your projects and files are stored locally.`,
+   browserTitle: 'Waiting for sign in', browserPrompt: 'Page did not open automatically? ', copyLink: 'Copy sign-in link', copiedLink: 'Link copied', copyFailed: 'Copy failed',
+   browserDescription: ', then open it in your browser to finish signing in.',
+   timeoutTitle: 'Sign in timed out', timeoutDescription: 'Sign in again to continue.',
+   failureTitle: 'Could not sign in',
+   platformFailed: 'Could not complete the operation. Try again.', platformRetry: 'Retry',
+-  loading: 'Loading…', backToHarness: 'Back to DeepSeek Harness',
++  loading: 'Loading…', backToHarness: `Back to ${brand.productName}`,
+   settings: 'Settings', contactUs: 'Feedback', menu: 'Account menu',
+-  nav: 'Account', navAccount: 'Account', signedIn: 'Signed in to DeepSeek', signedOut: 'Not signed in',
++  nav: 'Account', navAccount: 'Account', signedIn: `Signed in to ${brand.accountProvider}`, signedOut: 'Not signed in',
+   signIn: 'Sign in', signOut: 'Sign out',
+   signOutUnknownDescription: 'Could not check running tasks. Signing out may interrupt tasks using this account. Sign out now?',
+   signOutDescription: 'Signing out will not delete any data. You can sign in to this account again.',
+@@ -23,14 +24,14 @@ export const en = {
+   initializing: 'Starting sign in…', waiting: 'Continue in your browser',
+   completing: 'Completing sign in…', expired: 'Sign in expired. Try again.',
+   failed: 'Could not complete the operation. Try again.',
+-  settingsSignedOutTitle: 'You are not signed in to DeepSeek Harness',
+-  settingsSignedOutDescription: 'Sign in to DeepSeek Harness to get your dedicated API Key',
+-  signInDescription: 'Use your DeepSeek account to get started.',
++  settingsSignedOutTitle: `You are not signed in to ${brand.productName}`,
++  settingsSignedOutDescription: `Sign in to ${brand.productName} to get your dedicated API Key`,
++  signInDescription: `Use your ${brand.accountName.en} to get started.`,
+   profileUnavailable: 'Account details are not available yet.',
+   balance: 'Topped-up balance', bonusBalance: 'Granted balance', balanceUnavailable: 'View on Platform', balanceSignedOut: 'Sign in to view',
+   accountInfo: 'More account information', more: 'More', usage: 'View usage', topUp: 'Top up',
+   quotaTitle: 'No balance available',
+-  quotaDescription: 'DeepSeek Harness cannot start a new task with this account when no balance is available. Would you like to top up? You can also top up later in Settings → Account.',
++  quotaDescription: `${brand.productName} cannot start a new task with this account when no balance is available. Would you like to top up? You can also top up later in Settings → Account.`,
+   quotaTopUp: 'Top up',
+   bonusNoticeTitle: 'Bonus credited',
+ } as const
+@@ -42,15 +43,15 @@ export const zh: Record<AccountKey, string> = {
+   sessionExpired: '登录信息已失效，请重新登录',
+   ...onboardingCopy,
+   close: '关闭', addApiKey: '添加 API Key', retry: '重新登录',
+-  loginTitle: '开始使用', loginDescription: '登录 DeepSeek 账号，或添加 API Key，即可开始使用。你的项目和文件保存在本地。',
++  loginTitle: '开始使用', loginDescription: `登录 ${brand.accountName.zh}，或添加 API Key，即可开始使用。你的项目和文件保存在本地。`,
+   browserTitle: '等待登录', browserPrompt: '没有自动打开新页面？', copyLink: '复制登录链接', copiedLink: '链接已复制', copyFailed: '复制失败',
+   browserDescription: '，手动打开登录页完成登录。',
+   timeoutTitle: '登录已超时', timeoutDescription: '请重新登录后继续操作。',
+   failureTitle: '登录失败',
+   platformFailed: '操作未完成，请重试', platformRetry: '重试',
+-  loading: '加载中…', backToHarness: '返回 DeepSeek Harness',
++  loading: '加载中…', backToHarness: `返回 ${brand.productName}`,
+   settings: '设置', contactUs: '意见反馈', menu: '账号菜单',
+-  nav: '账号与余额', navAccount: '账号', signedIn: '已登录 DeepSeek', signedOut: '尚未登录',
++  nav: '账号与余额', navAccount: '账号', signedIn: `已登录 ${brand.accountProvider}`, signedOut: '尚未登录',
+   signIn: '登录', signOut: '退出登录',
+   signOutUnknownDescription: '暂时无法确认任务状态。退出登录可能会中断使用此账号的任务，是否继续？',
+   signOutDescription: '退出登录不会丢失任何数据，你仍可以登录此账号。',
+@@ -58,14 +59,14 @@ export const zh: Record<AccountKey, string> = {
+   initializing: '正在发起登录…', waiting: '请在浏览器中继续',
+   completing: '正在完成登录…', expired: '登录已过期，请重试。',
+   failed: '操作未完成，请重试。',
+-  settingsSignedOutTitle: '当前未登录 DeepSeek Harness 账号',
+-  settingsSignedOutDescription: '登录 DeepSeek Harness 账号获取专属 API Key',
+-  signInDescription: '登录 DeepSeek 账号以开始使用',
++  settingsSignedOutTitle: `当前未登录 ${brand.productName} 账号`,
++  settingsSignedOutDescription: `登录 ${brand.productName} 账号获取专属 API Key`,
++  signInDescription: `登录 ${brand.accountName.zh}以开始使用`,
+   profileUnavailable: '账号资料暂不可用',
+   balance: '充值余额', bonusBalance: '赠金余额', balanceUnavailable: '前往开放平台查看', balanceSignedOut: '登录后查看',
+   accountInfo: '更多账号信息', more: '更多', usage: '查询用量', topUp: '充值',
+   quotaTitle: '当前无可用余额',
+-  quotaDescription: '没有可用额度时，DeepSeek Harness 无法开始新的任务，是否前往充值？或者可以稍后前往 设置 → 账号与余额 进行充值。',
++  quotaDescription: `没有可用额度时，${brand.productName} 无法开始新的任务，是否前往充值？或者可以稍后前往 设置 → 账号与余额 进行充值。`,
+   quotaTopUp: '去充值',
+   bonusNoticeTitle: '赠金已到账',
+ }
+diff --git a/packages/client/ui-settings-account/src/client/locales/onboarding.ts b/packages/client/ui-settings-account/src/client/locales/onboarding.ts
+index 509986446e..b0fcb390e9 100644
+--- a/packages/client/ui-settings-account/src/client/locales/onboarding.ts
++++ b/packages/client/ui-settings-account/src/client/locales/onboarding.ts
+@@ -1,12 +1,13 @@
+ /** Chinese first-run copy from the onboarding requirements. */
++import { brand } from '../brand.ts'
+ export const onboardingCopy = {
+   onboardingArtworkLocale: 'zh',
+   onboardingWelcome: '欢迎使用',
+-  onboardingBrand: 'DeepSeek Harness',
+-  onboardingIntroduction: 'DeepSeek Harness 会以本地文件夹作为工作区，通过调用各种工具，读写本机文件，完成搜索整理资料、制作文档表格、编写代码、排查问题等各种任务。',
++  onboardingBrand: `${brand.productName}`,
++  onboardingIntroduction: `${brand.productName} 会以本地文件夹作为工作区，通过调用各种工具，读写本机文件，完成搜索整理资料、制作文档表格、编写代码、排查问题等各种任务。`,
+   onboardingStart: '开始设置',
+   onboardingCredit: '准备可用额度',
+-  onboardingCreditDescription: 'DeepSeek Harness 执行任务时，会根据模型与工具使用的 token 量扣除额度。请提前添加额度，避免任务在执行过程中被迫中断。你的余额只会在 Agent 实际执行任务时消耗。',
++  onboardingCreditDescription: `${brand.productName} 执行任务时，会根据模型与工具使用的 token 量扣除额度。请提前添加额度，避免任务在执行过程中被迫中断。你的余额只会在 Agent 实际执行任务时消耗。`,
+   onboardingTopUp: '去充值',
+   onboardingLater: '下一步',
+   onboardingFundedTopUp: '去充值',
+@@ -19,7 +20,7 @@ export const onboardingCopy = {
+   onboardingDevelopmentDescription: '修改代码、调试问题、运行命令和管理项目文件等',
+   onboardingContinue: '继续',
+   onboardingProcess: '你希望看到多少工作过程？',
+-  onboardingProcessDescription: '这只会影响工作过程的展示方式，不会影响 DeepSeek Harness 的工作能力。',
++  onboardingProcessDescription: `这只会影响工作过程的展示方式，不会影响 ${brand.productName} 的工作能力。`,
+   onboardingCompact: '聚焦结果',
+   onboardingCompactDescription: '只看结果，保持界面简洁明了',
+   onboardingStandard: '关键细节',
+@@ -33,7 +34,7 @@ export const onboardingCopy = {
+   onboardingSkipDescription: '你可以随时前往 设置 → 通用设置 中调整工作过程、性能与用量展示方式或开启代码工作工具。',
+   onboardingKeepSetting: '继续设置',
+   onboardingNoCreditTitle: '暂时跳过充值？',
+-  onboardingNoCreditDescription: '没有可用额度时，DeepSeek Harness 将无法开始新的任务。你可以稍后前往 设置 → 账号与余额 进行充值。',
++  onboardingNoCreditDescription: `没有可用额度时，${brand.productName} 将无法开始新的任务。你可以稍后前往 设置 → 账号与余额 进行充值。`,
+   onboardingUnderstood: '我知道了',
+   onboardingGoTopUp: '前往充值',
+   onboardingSaveFailed: '未能保存设置，请重试。',
+@@ -45,11 +46,11 @@ export const onboardingCopy = {
+ export const onboardingEnglishCopy: Record<keyof typeof onboardingCopy, string> = {
+   onboardingArtworkLocale: 'en',
+   onboardingWelcome: 'Welcome to',
+-  onboardingBrand: 'DeepSeek Harness',
+-  onboardingIntroduction: 'DeepSeek Harness works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more.',
++  onboardingBrand: `${brand.productName}`,
++  onboardingIntroduction: `${brand.productName} works in a local folder and uses tools to read and write files on your computer. It can help you research and organize information, create documents and spreadsheets, write code, troubleshoot issues, and more.`,
+   onboardingStart: 'Get started',
+   onboardingCredit: 'Add credits',
+-  onboardingCreditDescription: 'DeepSeek Harness charges credits based on the tokens used by models and tools. Add credits in advance to keep your tasks running without interruption. Your balance is only used while the agent is working on a task.',
++  onboardingCreditDescription: `${brand.productName} charges credits based on the tokens used by models and tools. Add credits in advance to keep your tasks running without interruption. Your balance is only used while the agent is working on a task.`,
+   onboardingTopUp: 'Add credits',
+   onboardingLater: 'Next',
+   onboardingFundedTopUp: 'Add credits',
+@@ -62,7 +63,7 @@ export const onboardingEnglishCopy: Record<keyof typeof onboardingCopy, string>
+   onboardingDevelopmentDescription: 'Edit code, debug issues, run commands, manage project files, and more',
+   onboardingContinue: 'Continue',
+   onboardingProcess: 'How much detail would you like to see?',
+-  onboardingProcessDescription: 'This only changes how progress is shown, not what DeepSeek Harness can do.',
++  onboardingProcessDescription: `This only changes how progress is shown, not what ${brand.productName} can do.`,
+   onboardingCompact: 'Results only',
+   onboardingCompactDescription: 'See just the results in a clean, simple interface',
+   onboardingStandard: 'Key details',
+@@ -76,7 +77,7 @@ export const onboardingEnglishCopy: Record<keyof typeof onboardingCopy, string>
+   onboardingSkipDescription: 'You can change how progress, performance, and usage are displayed, or enable Coding Tools, anytime in Settings → General.',
+   onboardingKeepSetting: 'Continue setup',
+   onboardingNoCreditTitle: 'Skip adding credits?',
+-  onboardingNoCreditDescription: 'DeepSeek Harness can’t start new tasks without credits. You can add them later in Settings → Account.',
++  onboardingNoCreditDescription: `${brand.productName} can’t start new tasks without credits. You can add them later in Settings → Account.`,
+   onboardingUnderstood: 'Got it',
+   onboardingGoTopUp: 'Add credits',
+   onboardingSaveFailed: 'Could not save settings. Try again.',
+diff --git a/scripts/client-build-environment.ts b/scripts/client-build-environment.ts
+index 57f12ef13b..1445116d0a 100644
+--- a/scripts/client-build-environment.ts
++++ b/scripts/client-build-environment.ts
+@@ -19,7 +19,8 @@ export const CLIENT_BUILD_PROFILE_SELECTOR = 'DSH_BUILD_CLIENT_PROFILE'
+ /** Public client environment required by official DSH artifacts. */
+ const OFFICIAL_CLIENT_BUILD_ENVIRONMENT = {
+   DSH_CLIENT_BUILD_PROFILE: 'official',
+-  DSH_CLIENT_TITLE: 'DeepSeek Harness',
++  // A rebranded Desktop build names its window after DSH_DESKTOP_PRODUCT_NAME.
++  DSH_CLIENT_TITLE: process.env.DSH_DESKTOP_PRODUCT_NAME || 'DeepSeek Harness',
+ } as const
+ 
+ /** Public variable carrying the source commit embedded in client artifacts. */

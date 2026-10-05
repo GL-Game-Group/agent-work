@@ -1,0 +1,47 @@
+node_modules/
+build/
+lib/
+# SvelteKit's source library is code, not build output.
+!admin/src/lib/
+*.tgz
+
+# Packaging secrets: only the .example templates are committed.
+overlay/apps/desktop/.env.macos
+overlay/apps/desktop/.env.windows
+
+# Signing material must never be committed; keep it outside the repository.
+assets/
+*.p8
+*.p12
+*.cer
+*.certSigningRequest
+
+
+# Company service secrets for local runs (gateway/.env.example is the template).
+gateway/.env
+gateway/data/
+
+# frpc is fetched (and checked against plugins/tunnel/frpc-release.json), never committed.
+plugins/tunnel/bin/
+
+# Server-side deployment state (deploy/.env.example is the template).
+deploy/.env
+deploy/.image-tag
+
+# Local secrets (Cloudflare, servers, frp): never commit.
+.env
+.env.*
+!.env.example
+!**/.env.example
+!**/.env.*.example
+deploy/certs/
+
+# macOS
+.DS_Store
+
+# Local company service database (dev runs)
+gateway/data/
+
+# Internal cluster deployment (deploy/AGENT_DEPLOY.md): credentials and local records
+*.kubeconfig
+deploy-history.log

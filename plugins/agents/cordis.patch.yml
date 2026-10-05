@@ -1,0 +1,23 @@
+# 命令行 Agent: the Host half (index.js) with its client half (client.js), and 直连模式.
+- insert:
+    # A path beside this patch: the Loader keeps a bundle's own package out of its import scope.
+    - id: agent-work-agents
+      name: ./index.js
+    # 直连模式: nothing from GL Work between the member and the command-line agent — no system
+    # prompt, no runtime context, no tools except the question card the CLI's questions arrive on.
+    - id: preset-direct
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: direct
+        name: 直连模式
+        description: 和本机的命令行 Agent（Claude Code 等）直接对话，GL Work 不添加提示词和工具。
+        order: 2
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: ''
+              complete: true
+              includeRuntimeContext: false
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'

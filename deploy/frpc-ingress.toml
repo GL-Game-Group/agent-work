@@ -1,0 +1,27 @@
+# This stack's names on the infrastructure frps of the same host (/etc/frp/frps.toml:
+# control on :80 with TLS forced, HTTPS vhosts by SNI on :443). Its token comes from
+# deploy/.env; nothing here changes that frps or its other clients.
+serverAddr = "127.0.0.1"
+serverPort = {{ .Envs.FRP_INGRESS_SERVER_PORT }}
+auth.token = "{{ .Envs.FRP_INGRESS_TOKEN }}"
+transport.tls.enable = true
+loginFailExit = false
+log.to = "console"
+log.level = "info"
+log.disablePrintColor = true
+
+[[proxies]]
+name = "agent-work"
+type = "https"
+localIP = "127.0.0.1"
+localPort = 8443
+customDomains = ["agent.glgwork.com", "frp.glgwork.com"]
+
+# Members' web tunnels (<name>-<member>.glwork.app), a proxy of its own: frps refuses a
+# whole proxy when any of its names conflicts with another client's.
+[[proxies]]
+name = "agent-work-tunnels"
+type = "https"
+localIP = "127.0.0.1"
+localPort = 8443
+customDomains = ["*.glwork.app"]

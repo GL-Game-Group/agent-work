@@ -1,0 +1,8 @@
+# 工作区管理: one row, the Host half (index.js) with its client half (client.js).
+- insert:
+    # A path beside this patch: the Loader keeps a bundle's own package out of its import scope.
+    - id: agent-work-workspace
+      name: ./index.js
+      config:
+        org: GL-Game-Group
+        root: ~/GLWork

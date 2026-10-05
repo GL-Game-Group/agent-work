@@ -1,0 +1,24 @@
+{
+  "name": "agent-work",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19 || >=24"
+  },
+  "scripts": {
+    "check:upstream": "node scripts/check-upstream.mjs",
+    "stage": "node scripts/stage.mjs",
+    "save-patches": "node scripts/save-patches.mjs",
+    "package": "node scripts/package.mjs",
+    "gateway:test": "pnpm --filter @agent-work/gateway typecheck && pnpm --filter @agent-work/gateway test",
+    "brand": "node scripts/brand.mjs",
+    "admin:dev": "pnpm --filter @agent-work/admin dev",
+    "admin:dev:github": "AGENT_WORK_ENV_FILE=../gateway/.env pnpm --filter @agent-work/admin dev",
+    "admin:check": "pnpm --filter @agent-work/admin check && pnpm --filter @agent-work/admin build",
+    "service:local": "pnpm --filter @agent-work/admin build && AGENT_WORK_ENV_FILE=../gateway/.env pnpm --filter @agent-work/admin start"
+  },
+  "devDependencies": {
+    "sharp": "^0.35.5"
+  }
+}

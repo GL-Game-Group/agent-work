@@ -1,0 +1,19 @@
+{
+  "productName": "GL Work",
+  "accountProvider": "GL Work",
+  "accountName": {
+    "en": "company account",
+    "zh": "公司账号"
+  },
+  "welcomeDescription": {
+    "en": "Work smart, earn more.",
+    "zh": "高效工作，努力赚钱。"
+  },
+  "logoColor": "#037CF4",
+  "heroHeadline": {
+    "en": "Work smart, earn more.",
+    "zh": "高效工作，努力赚钱。"
+  },
+  "heroPreview": false,
+  "iconMarkWidth": 0.68
+}

@@ -1,0 +1,805 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Fri, 2 Oct 2026 07:00:34 +0800
+Subject: [PATCH 05/11] desktop: account-only sign-in without Platform surfaces
+
+DSH_DESKTOP_ACCOUNT_ONLY=1 in the platform dotenv file records dshDesktopAccountOnly in the application manifest. Such a build lets people in only by signing in to its account provider: a stored API key no longer skips the welcome window, the welcome window offers no API-key entry or skip (and their IPC handlers refuse), and windows expose no dshPlatform bridge for embedded Platform pages.
+
+ui-settings-account gains platformAccount (default true). A deployment whose account provider is not DeepSeek Platform sets it to false to hide the balance, usage and top-up rows, the onboarding credit step (progress saved on it resumes at purpose), and the API-key alternative in the sign-in dialog.
+
+diff --git a/apps/desktop/.env.macos.example b/apps/desktop/.env.macos.example
+index d21463ef9d..1af9bdc2bf 100644
+--- a/apps/desktop/.env.macos.example
++++ b/apps/desktop/.env.macos.example
+@@ -1,6 +1,12 @@
+-# Copy to .env.macos (Git ignored). Use UTF-8 and quote secrets containing # or spaces.
++# Copy to .env.macos in this directory (Git ignored); `pnpm stage --reset` copies it into the stage.
+ # Paths may be absolute or relative to apps/desktop. Values are not shell-expanded.
+-DSH_DESKTOP_APP_ID=com.deepseek.harness
++DSH_DESKTOP_APP_ID=com.example.agentwork
++# Added by patches/0001: the installed application's name.
++DSH_DESKTOP_PRODUCT_NAME="Agent Work"
++# Added by patches/0003: keep this build's data and Host port apart from other DeepSeek Harness Desktop installs.
++# The person running the app can still override them with DSH_HOME / DSH_DESKTOP_HOST_PORT.
++DSH_DESKTOP_DEFAULT_HOME=~/.agent-work
++DSH_DESKTOP_HOST_PORT=19487
+ DSH_DESKTOP_AUTO_UPDATE_ENV=test
+ DOWNLOAD_TEST_ORIGIN=
+ # Required for test releases: 32 lowercase hexadecimal characters from a secure random generator.
+diff --git a/apps/desktop/.env.windows.example b/apps/desktop/.env.windows.example
+index 4950c70b27..271555d598 100644
+--- a/apps/desktop/.env.windows.example
++++ b/apps/desktop/.env.windows.example
+@@ -1,6 +1,12 @@
+-# Copy to .env.windows (Git ignored). Use UTF-8 and quote secrets containing # or spaces.
++# Copy to .env.windows in this directory (Git ignored); `pnpm stage --reset` copies it into the stage.
+ # Credential file paths may be absolute or relative to apps/desktop. Values are not shell-expanded.
+-DSH_DESKTOP_APP_ID=com.deepseek.harness
++DSH_DESKTOP_APP_ID=com.example.agentwork
++# Added by patches/0001: the installed application's name.
++DSH_DESKTOP_PRODUCT_NAME="Agent Work"
++# Added by patches/0003: keep this build's data and Host port apart from other DeepSeek Harness Desktop installs.
++# The person running the app can still override them with DSH_HOME / DSH_DESKTOP_HOST_PORT.
++DSH_DESKTOP_DEFAULT_HOME=~/.agent-work
++DSH_DESKTOP_HOST_PORT=19487
+ DSH_DESKTOP_AUTO_UPDATE_ENV=test
+ DOWNLOAD_TEST_ORIGIN=
+ # Required for test releases: 32 lowercase hexadecimal characters from a secure random generator.
+diff --git a/apps/desktop/scripts/desktop-package-environment.mjs b/apps/desktop/scripts/desktop-package-environment.mjs
+index 8a6b28061f..f1b2f29781 100644
+--- a/apps/desktop/scripts/desktop-package-environment.mjs
++++ b/apps/desktop/scripts/desktop-package-environment.mjs
+@@ -13,10 +13,10 @@ import { resolveWindowsSignatureCacheDirectory } from './windows-signature-cache
+ import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
+ 
+ const APP_ROOT = fileURLToPath(new URL('..', import.meta.url))
+-const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|DEFAULT_HOME|HOST_PORT|EXTRA_BUNDLE_DIRS|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
++const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|DEFAULT_HOME|HOST_PORT|EXTRA_BUNDLE_DIRS|ACCOUNT_ONLY|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
+ const WINDOWS_SETTING = /^DSH_DESKTOP_WINDOWS_(?:CER_FILE|SIGNTOOL|KEY_CONTAINER|TOKEN_PIN|SIGNATURE_CACHE_DIR|SIGNATURE_CACHE_CONCURRENCY)$/u
+ const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|PACK_CONCURRENCY|DOWNLOAD_PROXY|NOTARIZATION_PROXY)|APPLE_(?:API_KEY|API_KEY_ID|API_ISSUER|ID|APP_SPECIFIC_PASSWORD|TEAM_ID|KEYCHAIN|KEYCHAIN_PROFILE)|CSC_(?:LINK|KEY_PASSWORD))$/u
+-const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|DEFAULT_HOME|HOST_PORT|EXTRA_BUNDLE_DIRS|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
++const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|DEFAULT_HOME|HOST_PORT|EXTRA_BUNDLE_DIRS|ACCOUNT_ONLY|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
+ const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGNTOOL', 'APPLE_API_KEY', 'APPLE_KEYCHAIN', 'CSC_LINK']
+ 
+ /**
+diff --git a/apps/desktop/scripts/desktop-release-environment.d.mts b/apps/desktop/scripts/desktop-release-environment.d.mts
+index af4f8df3df..3b03e0f08f 100644
+--- a/apps/desktop/scripts/desktop-release-environment.d.mts
++++ b/apps/desktop/scripts/desktop-release-environment.d.mts
+@@ -67,7 +67,7 @@ export function resolveDesktopProductName(env: NodeJS.ProcessEnv): string
+  * @param env - Packaging environment.
+  * @returns Harness home (absolute or `~/`-relative), Host listen port, and userData directory name; each omitted when unset.
+  */
+-export function resolveDesktopRuntimeDefaults(env: NodeJS.ProcessEnv): { defaultHome?: string, hostPort?: number, userDataName?: string, defaultBundles?: string[] }
++export function resolveDesktopRuntimeDefaults(env: NodeJS.ProcessEnv): { defaultHome?: string, hostPort?: number, userDataName?: string, defaultBundles?: string[], accountOnly?: true }
+ 
+ /** Environment variable listing bundle package directories that the build preinstalls and selects by default. */
+ export const EXTRA_BUNDLE_DIRS_ENV: 'DSH_DESKTOP_EXTRA_BUNDLE_DIRS'
+diff --git a/apps/desktop/scripts/desktop-release-environment.mjs b/apps/desktop/scripts/desktop-release-environment.mjs
+index 57821d484a..9da4669b25 100644
+--- a/apps/desktop/scripts/desktop-release-environment.mjs
++++ b/apps/desktop/scripts/desktop-release-environment.mjs
+@@ -111,10 +111,17 @@ export function resolveDesktopExtraBundles(env) {
+  * @param {NodeJS.ProcessEnv} env - Packaging environment.
+  * Bundles from `DSH_DESKTOP_EXTRA_BUNDLE_DIRS` are selected by every profile.
+  * @param {NodeJS.ProcessEnv} env - Packaging environment.
+- * @returns {{ defaultHome?: string, hostPort?: number, userDataName?: string, defaultBundles?: string[] }} Harness home (absolute or `~/`-relative), Host listen port, userData directory name, and preinstalled bundle names; each omitted when unset.
++ * `DSH_DESKTOP_ACCOUNT_ONLY=1` lets people in only by signing in to the account provider.
++ * @param {NodeJS.ProcessEnv} env - Packaging environment.
++ * @returns {{ defaultHome?: string, hostPort?: number, userDataName?: string, defaultBundles?: string[], accountOnly?: true }} Harness home (absolute or `~/`-relative), Host listen port, userData directory name, preinstalled bundle names, and account-only sign-in; each omitted when unset.
+  */
+ export function resolveDesktopRuntimeDefaults(env) {
+   const defaults = {}
++  const accountOnly = env.DSH_DESKTOP_ACCOUNT_ONLY?.trim() ?? ''
++  if (accountOnly === '1') defaults.accountOnly = true
++  else if (accountOnly !== '' && accountOnly !== '0') {
++    throw new Error('desktop release environment: DSH_DESKTOP_ACCOUNT_ONLY must be 1 or 0')
++  }
+   const extraBundles = resolveDesktopExtraBundles(env)
+   if (extraBundles.length > 0) defaults.defaultBundles = extraBundles.map(bundle => bundle.name)
+   const productName = env.DSH_DESKTOP_PRODUCT_NAME
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index 230145a879..2139bc76e6 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -110,6 +110,7 @@ export function createElectronBuilderConfig(
+       ...runtimeDefaults.hostPort === undefined ? {} : { dshDesktopHostPort: runtimeDefaults.hostPort },
+       ...runtimeDefaults.userDataName === undefined ? {} : { dshDesktopUserDataName: runtimeDefaults.userDataName },
+       ...runtimeDefaults.defaultBundles === undefined ? {} : { dshDesktopDefaultBundles: runtimeDefaults.defaultBundles },
++      ...runtimeDefaults.accountOnly === undefined ? {} : { dshDesktopAccountOnly: true },
+       dshMandatoryUpdatePolicy: policy,
+       ...buildVersion === productVersion ? {} : { version: buildVersion },
+       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
+diff --git a/apps/desktop/src/client/WelcomePage.tsx b/apps/desktop/src/client/WelcomePage.tsx
+index b367061732..6beb111040 100644
+--- a/apps/desktop/src/client/WelcomePage.tsx
++++ b/apps/desktop/src/client/WelcomePage.tsx
+@@ -100,6 +100,7 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+     setBusy(true)
+     setError('')
+     try {
++      if (api.saveApiKey === undefined) return
+       const result = await api.saveApiKey(value)
+       if (!mounted.current) return
+       if (result.ok) setDraft('')
+@@ -116,7 +117,7 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+     busyRef.current = true
+     setBusy(true)
+     try {
+-      await api.skip()
++      await api.skip?.()
+       if (mounted.current) setDraft('')
+     } catch {
+       if (mounted.current) setError(m.welcomeContinueFailed)
+@@ -203,14 +204,14 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+           <StateDot state="ongoing" size={16} className="welcome-loading" />
+         </button>
+         <button id="auth-retry" className="primary" type="button" hidden={!failed} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'sign_in' }); void start() }}>{m.welcomeAuthRetry}</button>
+-        <button id="auth-api-key" className="secondary" type="button" hidden={!failed} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'api-key' }); navigate('key') }}>{m.welcomeApiKey}</button>
++        <button id="auth-api-key" className="secondary" type="button" hidden={!failed || api.saveApiKey === undefined} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'api-key' }); navigate('key') }}>{m.welcomeApiKey}</button>
+         <button id="auth-cancel" className="secondary" type="button" hidden={failed}
+           disabled={cancelling || phase === 'committing' || phase === 'succeeded' || (phase === 'initializing' && !attempt?.id)}
+           onClick={() => { void cancel() }}>{m.welcomeAuthCancel}</button>
+       </div>
+       <div id="entry-actions" className="actions" hidden={page !== 'entry'}>
+         <button id="sign-in" className="primary" type="button" onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'sign_in' }); void start() }}>{m.welcomeSignIn}</button>
+-        <button ref={keyButton} id="api-key" className="secondary" type="button" onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'api-key' }); navigate('key') }}>{m.welcomeApiKey}</button>
++        <button ref={keyButton} id="api-key" className="secondary" type="button" hidden={api.saveApiKey === undefined} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'api-key' }); navigate('key') }}>{m.welcomeApiKey}</button>
+       </div>
+       <div id="key-actions" className="actions" hidden={page !== 'key'}>
+         <button id="save-key" className="primary" type="submit" form="key-form" disabled={busy || draft.trim() === ''}>{m.welcomeKeySave}</button>
+diff --git a/apps/desktop/src/ipc.ts b/apps/desktop/src/ipc.ts
+index fc19021fa6..1cf4f9bd36 100644
+--- a/apps/desktop/src/ipc.ts
++++ b/apps/desktop/src/ipc.ts
+@@ -5,6 +5,9 @@ import type { IpcMainInvokeEvent } from 'electron'
+ import type { DesktopBrowserBridge } from '@deepseek-ai/dsh-client-ui-sidebar-browser/types'
+ 
+ /** IPC channel names kept private to the desktop application bundle. */
++/** Window argument telling preloads that this build signs in only through its account provider. */
++export const ACCOUNT_ONLY_ARGUMENT = '--dsh-account-only'
++
+ export const DESKTOP_IPC = {
+   shortcutsInput: 'dsh-desktop:shortcuts-input',
+   shortcutsCloseWindow: 'dsh-desktop:shortcuts-close-window',
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index ce7bd03b49..4227adcf50 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -31,7 +31,7 @@ import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-vi
+ import { installDesktopDirectoryPicker } from './directory-picker.ts'
+ import { installMicrophonePermissions } from './microphone-permissions.ts'
+ import { DesktopBackendController } from './backend-controller.ts'
+-import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
++import { ACCOUNT_ONLY_ARGUMENT, DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
+ import { readDeviceInfo } from './device-info.ts'
+ import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
+ import { claimDesktopSingleInstance } from './single-instance.ts'
+@@ -42,6 +42,7 @@ import { DesktopFatalRecovery } from './fatal-recovery.ts'
+ import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
+ import { openWelcomeWindow } from './welcome-window.ts'
+ import { WELCOME_IPC, needsWelcome, type WelcomeNotice } from './welcome-api.ts'
++import { desktopAccountOnly } from './runtime-defaults.ts'
+ import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-backend.ts'
+ import { DesktopUpdateJournal } from './update-journal.ts'
+ import { DesktopUpdatePreparationError } from './update-error.ts'
+@@ -230,6 +231,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
+     } : {}),
+     webPreferences: {
+       preload,
++      ...desktopAccountOnly() ? { additionalArguments: [ACCOUNT_ONLY_ARGUMENT] } : {},
+       nodeIntegration: false,
+       contextIsolation: true,
+       sandbox: true,
+@@ -474,7 +476,7 @@ async function main(): Promise<void> {
+           if (state.status === 'credential-stored' && attempt?.phase === 'succeeded' && welcomeWindow !== undefined) void enterWorkspace({ activate: false }).catch(() => undefined)
+           if (previousAccountStatus === 'credential-stored' && state.status === 'signed-out') {
+             void readWelcomeState().then(async (value) => {
+-              if (needsWelcome(value) && !quitting) {
++              if (needsWelcome(value, desktopAccountOnly()) && !quitting) {
+                 enteredWorkspace = false
+                 await showWelcome()
+                 if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
+@@ -487,7 +489,7 @@ async function main(): Promise<void> {
+           // The stream reconnects; a transport failure does not change account state.
+         }, () => {
+           void readWelcomeState().then(async (value) => {
+-            if (!needsWelcome(value) || quitting) return
++            if (!needsWelcome(value, desktopAccountOnly()) || quitting) return
+             pendingWelcomeNotice = 'session-expired'
+             enteredWorkspace = false
+             await showWelcome()
+@@ -1203,7 +1205,7 @@ async function main(): Promise<void> {
+     locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
+     windowsLanguage = locale.id
+     refreshApplicationMenu()
+-    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
++    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey }, desktopAccountOnly())) {
+       // A later login must retain its own activation policy instead of replaying startup focus.
+       raiseAfterUpdate = false
+       await showWelcome()
+diff --git a/apps/desktop/src/preload-app.ts b/apps/desktop/src/preload-app.ts
+index f590b8bc8b..e4816480ba 100644
+--- a/apps/desktop/src/preload-app.ts
++++ b/apps/desktop/src/preload-app.ts
+@@ -2,7 +2,7 @@
+ 
+ import type { DesktopShortcutInput, ShortcutConfigSnapshot, ShortcutSaveResult } from '@deepseek-ai/dsh-client-shortcuts/protocol'
+ import { contextBridge, ipcRenderer, webUtils } from 'electron'
+-import { DESKTOP_IPC, SCHEME, type DshDesktopProductApi, type DesktopUpdatePresentation } from './ipc.ts'
++import { ACCOUNT_ONLY_ARGUMENT, DESKTOP_IPC, SCHEME, type DshDesktopProductApi, type DesktopUpdatePresentation } from './ipc.ts'
+ import { PLATFORM_IPC } from './platform-ipc.ts'
+ import { markDocumentPlatform, syncWindowFullscreen } from './preload-platform.ts'
+ import { syncNativeTheme } from './preload-theme.ts'
+@@ -86,7 +86,8 @@ if (location.protocol === `${SCHEME}:` && location.hostname === 'app') {
+     ready: () => ipcRenderer.invoke(DESKTOP_IPC.boot) as Promise<unknown>,
+     failed: (message: string) => ipcRenderer.invoke(DESKTOP_IPC.bootFailed, message) as Promise<void>,
+   })
+-  contextBridge.exposeInMainWorld('dshPlatform', {
++  // Account-only builds have no Platform account whose pages could be embedded.
++  if (!process.argv.includes(ACCOUNT_ONLY_ARGUMENT)) contextBridge.exposeInMainWorld('dshPlatform', {
+     open: (page: 'usage' | 'top-up', bounds: { x: number; y: number; width: number; height: number }) => ipcRenderer.invoke(PLATFORM_IPC.open, page, bounds),
+     setBounds: (bounds: { x: number; y: number; width: number; height: number }) => ipcRenderer.invoke(PLATFORM_IPC.bounds, bounds),
+     close: () => ipcRenderer.invoke(PLATFORM_IPC.close),
+diff --git a/apps/desktop/src/preload-welcome.ts b/apps/desktop/src/preload-welcome.ts
+index 6748367e81..61e81273ec 100644
+--- a/apps/desktop/src/preload-welcome.ts
++++ b/apps/desktop/src/preload-welcome.ts
+@@ -3,6 +3,7 @@ import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-acc
+ 
+ import { contextBridge, ipcRenderer } from 'electron'
+ import { resolveDesktopLocale } from './locale.ts'
++import { ACCOUNT_ONLY_ARGUMENT } from './ipc.ts'
+ import { WELCOME_IPC, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
+ 
+ const prefix = '--dsh-welcome-locale='
+@@ -23,7 +24,9 @@ const api: WelcomeApi = {
+     ipcRenderer.on(WELCOME_IPC.state, receive)
+     return () => { ipcRenderer.removeListener(WELCOME_IPC.state, receive) }
+   },
+-  saveApiKey: (value: string) => ipcRenderer.invoke(WELCOME_IPC.saveApiKey, value) as Promise<WelcomeSaveResult>,
+-  skip: () => ipcRenderer.invoke(WELCOME_IPC.skip) as Promise<void>,
++  ...process.argv.includes(ACCOUNT_ONLY_ARGUMENT) ? {} : {
++    saveApiKey: (value: string) => ipcRenderer.invoke(WELCOME_IPC.saveApiKey, value) as Promise<WelcomeSaveResult>,
++    skip: () => ipcRenderer.invoke(WELCOME_IPC.skip) as Promise<void>,
++  },
+ }
+ contextBridge.exposeInMainWorld('dshWelcome', api)
+diff --git a/apps/desktop/src/runtime-defaults.ts b/apps/desktop/src/runtime-defaults.ts
+index 2ea3a200ec..dc3ad23a80 100644
+--- a/apps/desktop/src/runtime-defaults.ts
++++ b/apps/desktop/src/runtime-defaults.ts
+@@ -2,6 +2,19 @@
+ 
+ import { expandHomePath } from '@deepseek-ai/dsh-home-paths'
+ 
++/** Environment variable through which a packaged main process publishes account-only sign-in. */
++export const DESKTOP_ACCOUNT_ONLY_ENV = 'DSH_DESKTOP_ACCOUNT_ONLY'
++
++/**
++ * Whether this build lets people in only by signing in to its account provider: no API-key
++ * entry or skip in the welcome window, and no embedded Platform pages.
++ * @param env - Environment published by packaged-runtime-defaults.ts.
++ * @returns true for account-only builds.
++ */
++export function desktopAccountOnly(env: NodeJS.ProcessEnv = process.env): boolean {
++  return env[DESKTOP_ACCOUNT_ONLY_ENV] === '1'
++}
++
+ /** Environment variable through which a packaged main process publishes its preinstalled bundles. */
+ export const DESKTOP_DEFAULT_BUNDLES_ENV = 'DSH_DESKTOP_DEFAULT_BUNDLES'
+ 
+@@ -68,4 +81,8 @@ export function applyDesktopRuntimeDefaults(manifest: unknown, env: NodeJS.Proce
+     // The build owns this list; a person's environment does not override it.
+     env[DESKTOP_DEFAULT_BUNDLES_ENV] = bundles.join(',')
+   }
++  if ('dshDesktopAccountOnly' in manifest) {
++    if (manifest.dshDesktopAccountOnly !== true) throw new Error('desktop runtime defaults: dshDesktopAccountOnly must be true when present')
++    env[DESKTOP_ACCOUNT_ONLY_ENV] = '1'
++  }
+ }
+diff --git a/apps/desktop/src/welcome-api.ts b/apps/desktop/src/welcome-api.ts
+index c693f385d6..c5c01e74d8 100644
+--- a/apps/desktop/src/welcome-api.ts
++++ b/apps/desktop/src/welcome-api.ts
+@@ -54,7 +54,8 @@ export interface WelcomeOperations {
+ }
+ 
+ /** The renderer receives localized copy, login operations, and safe account snapshots. */
+-export type WelcomeApi = DesktopLocale & WelcomeOperations & {
++/** The welcome renderer's bridge; account-only builds omit the API-key entry and skip. */
++export type WelcomeApi = DesktopLocale & Omit<WelcomeOperations, 'saveApiKey' | 'skip'> & Partial<Pick<WelcomeOperations, 'saveApiKey' | 'skip'>> & {
+   /** @param listener - safe account snapshot recipient. @returns subscription disposer. */
+   onAccountState(listener: (state: AccountView) => void): () => void
+ }
+@@ -68,8 +69,10 @@ export interface WelcomeAuthentication {
+ /**
+  * Decide whether a startup or sign-out requires the welcome entry.
+  * @param authentication - current account and independently stored API-key facts.
+- * @returns true only when neither authentication route is configured.
++ * @param accountOnly - whether the build admits only its account provider.
++ * @returns true only when neither authentication route is configured, or when an account-only build is signed out.
+  */
+-export function needsWelcome(authentication: WelcomeAuthentication): boolean {
+-  return !authentication.loggedIn && !authentication.hasApiKey
++export function needsWelcome(authentication: WelcomeAuthentication, accountOnly = false): boolean {
++  // An account-only build never lets a stored API key stand in for signing in.
++  return !authentication.loggedIn && (accountOnly || !authentication.hasApiKey)
+ }
+diff --git a/apps/desktop/src/welcome-window.ts b/apps/desktop/src/welcome-window.ts
+index 61fda9e36a..3dc70ac380 100644
+--- a/apps/desktop/src/welcome-window.ts
++++ b/apps/desktop/src/welcome-window.ts
+@@ -5,6 +5,8 @@ import { join } from 'node:path'
+ import { fileURLToPath } from 'node:url'
+ import { app, BrowserWindow, ipcMain, type BrowserWindowConstructorOptions, type IpcMainInvokeEvent } from 'electron'
+ import type { DesktopLocale } from './locale.ts'
++import { ACCOUNT_ONLY_ARGUMENT } from './ipc.ts'
++import { desktopAccountOnly } from './runtime-defaults.ts'
+ import { WELCOME_IPC, type WelcomeOperations } from './welcome-api.ts'
+ 
+ /**
+@@ -38,7 +40,7 @@ export function welcomeWindowOptions(platform: NodeJS.Platform, locale: DesktopL
+     } as const : {}),
+     webPreferences: {
+       preload: fileURLToPath(new URL('./preload-welcome.cjs', import.meta.url)),
+-      additionalArguments: [`--dsh-welcome-locale=${locale.id}`],
++      additionalArguments: [`--dsh-welcome-locale=${locale.id}`, ...desktopAccountOnly() ? [ACCOUNT_ONLY_ARGUMENT] : []],
+       nodeIntegration: false,
+       contextIsolation: true,
+       sandbox: true,
+@@ -95,11 +97,13 @@ export async function openWelcomeWindow(locale: DesktopLocale, operations: Welco
+   ipcMain.handle(WELCOME_IPC.takeNotice, async (event) => { assertSender(event); return operations.takeNotice() })
+   ipcMain.handle(WELCOME_IPC.saveApiKey, async (event, value: unknown) => {
+     assertSender(event)
++    if (desktopAccountOnly()) return { ok: false }
+     if (typeof value !== 'string' || !/^[\x21-\x7e]+$/.test(value)) return { ok: false }
+     return operations.saveApiKey(value)
+   })
+   ipcMain.handle(WELCOME_IPC.skip, async (event) => {
+     assertSender(event)
++    if (desktopAccountOnly()) throw new Error('desktop welcome: sign-in is required')
+     await operations.skip()
+   })
+   ipcMain.handle(WELCOME_IPC.start, async (event) => { assertSender(event); return operations.startSignIn() })
+diff --git a/apps/desktop/tests/macos-signature.spec.ts b/apps/desktop/tests/macos-signature.spec.ts
+index 6952b360ea..6890c363f0 100644
+--- a/apps/desktop/tests/macos-signature.spec.ts
++++ b/apps/desktop/tests/macos-signature.spec.ts
+@@ -111,6 +111,16 @@ describe('desktop macOS release signature', () => {
+       .toThrow(/DSH_DESKTOP_HOST_PORT/u)
+   })
+ 
++  it('records account-only sign-in', async () => {
++    const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
++    expect(createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_ACCOUNT_ONLY: '1' }, 'darwin', 'arm64').extraMetadata)
++      .toMatchObject({ dshDesktopAccountOnly: true })
++    expect(createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_ACCOUNT_ONLY: '0' }, 'darwin', 'arm64').extraMetadata)
++      .not.toHaveProperty('dshDesktopAccountOnly')
++    expect(() => createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_ACCOUNT_ONLY: 'yes' }, 'darwin', 'arm64'))
++      .toThrow(/DSH_DESKTOP_ACCOUNT_ONLY/u)
++  })
++
+   it('records preinstalled bundle names from their package directories', async () => {
+     const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs')
+     const { tmpdir } = await import('node:os')
+diff --git a/apps/desktop/tests/runtime-defaults.spec.ts b/apps/desktop/tests/runtime-defaults.spec.ts
+index bc60222a37..3cdcb06dc7 100644
+--- a/apps/desktop/tests/runtime-defaults.spec.ts
++++ b/apps/desktop/tests/runtime-defaults.spec.ts
+@@ -1,7 +1,7 @@
+ import { homedir } from 'node:os'
+ import { join } from 'node:path'
+ import { describe, expect, it } from 'vitest'
+-import { DESKTOP_DEFAULT_BUNDLES_ENV, applyDesktopRuntimeDefaults, desktopDefaultBundles, desktopUserDataName } from '../src/runtime-defaults.ts'
++import { DESKTOP_DEFAULT_BUNDLES_ENV, applyDesktopRuntimeDefaults, desktopAccountOnly, desktopDefaultBundles, desktopUserDataName } from '../src/runtime-defaults.ts'
+ 
+ describe('applyDesktopRuntimeDefaults', () => {
+   it('sets the Harness home and Host port when the person has not chosen them', () => {
+@@ -49,6 +49,16 @@ describe('preinstalled default bundles', () => {
+   })
+ })
+ 
++describe('account-only sign-in', () => {
++  it('follows the manifest flag', () => {
++    const env: NodeJS.ProcessEnv = {}
++    expect(desktopAccountOnly(env)).toBe(false)
++    applyDesktopRuntimeDefaults({ dshDesktopAccountOnly: true }, env)
++    expect(desktopAccountOnly(env)).toBe(true)
++    expect(() => applyDesktopRuntimeDefaults({ dshDesktopAccountOnly: 'yes' }, {})).toThrow(/dshDesktopAccountOnly/u)
++  })
++})
++
+ describe('desktopUserDataName', () => {
+   it('returns the packaged userData directory name', () => {
+     expect(desktopUserDataName({ dshDesktopUserDataName: 'Team App' })).toBe('Team App')
+diff --git a/apps/desktop/tests/welcome-window.spec.ts b/apps/desktop/tests/welcome-window.spec.ts
+index 6d2807c425..edb3e24052 100644
+--- a/apps/desktop/tests/welcome-window.spec.ts
++++ b/apps/desktop/tests/welcome-window.spec.ts
+@@ -186,6 +186,11 @@ describe('desktop welcome window', () => {
+     expect(needsWelcome({ loggedIn: false, hasApiKey: true })).toBe(false)
+     expect(needsWelcome({ loggedIn: true, hasApiKey: true })).toBe(false)
+   })
++
++  it('lets only signing in pass in account-only builds', () => {
++    expect(needsWelcome({ loggedIn: false, hasApiKey: true }, true)).toBe(true)
++    expect(needsWelcome({ loggedIn: true, hasApiKey: false }, true)).toBe(false)
++  })
+ })
+ 
+ it('accepts only permitted event fields and reads the current policy over IPC', async () => {
+diff --git a/packages/client/ui-settings-account/src/client/AccountMenu.tsx b/packages/client/ui-settings-account/src/client/AccountMenu.tsx
+index 9eafffa893..c8c567ad17 100644
+--- a/packages/client/ui-settings-account/src/client/AccountMenu.tsx
++++ b/packages/client/ui-settings-account/src/client/AccountMenu.tsx
+@@ -22,7 +22,7 @@ export type AccountMenuProps = PropsRuntime<'settings.launcher'> & PropsLocale<'
+ export function AccountMenu({
+   subscribeSessionExpired, subscribeModelSignInRequired, wide, settingsShortcut, openSettings, openOnboarding, settingsOpen,
+   useAccount, useTheme, signOut, hasRunningAccountTasks, refreshAccount, bonusNoticeShown, bonusNoticeDismissed,
+-  contactUs, showLogin, start, cancel, t,
++  contactUs, showLogin, start, cancel, t, platformAccount = true,
+ }: AccountMenuProps) {
+   const anchor = useRef<HTMLDivElement>(null)
+   // The launcher outlives the panel, so a false-to-true edge is one Settings entry:
+@@ -84,7 +84,7 @@ export function AccountMenu({
+       }} />
+     {account.loginVisible && !account.onboarding && <SignInDialog account={account} colorScheme={colorScheme}
+       start={start} cancel={cancel} t={t}
+-      close={() => { showLogin(false) }} useApiKey={() => { showLogin(false); openOnboarding('deepseek-official') }} />}
++      close={() => { showLogin(false) }} {...platformAccount ? { useApiKey: () => { showLogin(false); openOnboarding('deepseek-official') } } : {}} />}
+     {signedIn && signOutImpact !== undefined && <SignOutDialog running={signOutImpact} signOut={signOut}
+       close={() => { setSignOutImpact(undefined) }} t={t} />}
+   </div>
+diff --git a/packages/client/ui-settings-account/src/client/AccountSection.tsx b/packages/client/ui-settings-account/src/client/AccountSection.tsx
+index 6d020ad29a..8a0a3e1db5 100644
+--- a/packages/client/ui-settings-account/src/client/AccountSection.tsx
++++ b/packages/client/ui-settings-account/src/client/AccountSection.tsx
+@@ -45,6 +45,8 @@ export interface AccountSectionInjected {
+   subscribeModelSignInRequired?: (listener: () => void) => () => void
+   /** Desktop-only: show one page in the account feature's shared native host; absent in ordinary browsers. */
+   openPlatformPage?: PlatformPages['open']
++  /** Show Platform balance, usage and top-up, and the API-key sign-in alternative; absent means shown. */
++  platformAccount?: boolean
+ 
+   /** Account stream owned by the Host and theme snapshots published by the renderer, observed through framework hooks. */
+   hooks: {
+@@ -81,7 +83,7 @@ export interface AccountSectionInjected {
+ export type AccountSectionProps =
+   PropsRuntime<'settings.section'> & PropsLocale<'settings.account'> & InjectFace<AccountSectionInjected>
+ /** @param props - localized actions, account subscription, and the shared Platform page channel. @returns account settings UI. */
+-export function AccountSection({ t, useAccount, useTheme, start, cancel, openPlatformPage }: AccountSectionProps) {
++export function AccountSection({ t, useAccount, useTheme, start, cancel, openPlatformPage, platformAccount = true }: AccountSectionProps) {
+   const { view: state, details, failed: streamFailed } = useAccount(value => value)
+   const colorScheme = useTheme(snapshot => snapshot.active.colorScheme)
+   // The shared host owns the native view; this page holds only its own request,
+@@ -138,7 +140,7 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
+       : active ? t(attempt.phase === 'initializing' ? 'initializing' : attempt.phase === 'waiting-browser' ? 'waiting' : 'completing')
+         : signedIn ? profile?.contact ?? t(details?.profile === undefined ? 'loading' : 'profileUnavailable') : t('signInDescription')
+   if (!signedIn && !active) return (
+-    <section className={css.signedOut} aria-label={t('nav')}>
++    <section className={css.signedOut} aria-label={t(platformAccount ? 'nav' : 'navAccount')}>
+       <div className={css.signedOutContent}>
+         <div className={css.signedOutCopy}>
+           <span className={css.signedOutTitle}>{t('settingsSignedOutTitle')}</span>
+@@ -152,7 +154,7 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
+     </section>
+   )
+   return (
+-    <section className={css.section} aria-label={t('nav')}>
++    <section className={css.section} aria-label={t(platformAccount ? 'nav' : 'navAccount')}>
+       <div className={css.card}>
+         <div className={css.identity}>
+           <span className={css.avatar}><AccountAvatar url={signedIn ? profile?.avatarUrl : null} /></span>
+@@ -173,7 +175,7 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
+         <Button variant="outline" disabled={busy || attempt.phase === 'committing'}
+           onClick={() => { void run(() => cancel(attempt.id)) }}>{t('cancel')}</Button>
+       </div>}
+-      <div className={css.balanceCard}>
++      {platformAccount && <div className={css.balanceCard}>
+         <div className={css.row}>
+           <span>{t('balance')}</span>
+           {signedIn && wallets !== undefined && wallets.length > 0
+@@ -209,7 +211,7 @@ export function AccountSection({ t, useAccount, useTheme, start, cancel, openPla
+               onClick={(event) => { if (openPlatformPage !== undefined && signedIn) { event.preventDefault(); showPage(openPlatformPage, 'top-up') } }}>{t('topUp')}</a>
+           </div>
+         </div>
+-      </div>
++      </div>}
+     </section>
+   )
+ }
+diff --git a/packages/client/ui-settings-account/src/client/DesktopOnboarding.tsx b/packages/client/ui-settings-account/src/client/DesktopOnboarding.tsx
+index 99c1bc4d2a..601f189cfc 100644
+--- a/packages/client/ui-settings-account/src/client/DesktopOnboarding.tsx
++++ b/packages/client/ui-settings-account/src/client/DesktopOnboarding.tsx
+@@ -26,7 +26,7 @@ const onboardingPages = {
+  * @returns the active first-run page.
+  */
+ export function DesktopOnboarding({
+-  state, account, openPlatformPage, update, complete, retry, t, locale, track, exiting = false,
++  state, account, openPlatformPage, platformAccount = true, update, complete, retry, t, locale, track, exiting = false,
+ }: DesktopOnboardingProps) {
+   const [dialog, setDialog] = useState<OnboardingConfirmationKind | null>(null)
+   const heading = useRef<HTMLHeadingElement>(null)
+@@ -36,7 +36,8 @@ export function DesktopOnboarding({
+   const releaseRecharge = useRef<(() => void) | undefined>(undefined)
+   useEffect(() => () => { releaseRecharge.current?.(); releaseRecharge.current = undefined }, [])
+   const progress = state.progress
+-  const targetStep = progress.step
++  // Without Platform the credit step does not exist; progress saved on it resumes at the next page.
++  const targetStep = progress.step === 'credit' && !platformAccount ? 'purpose' : progress.step
+   const [step, setStep] = useState(targetStep)
+   const busy = state.status === 'loading' || state.status === 'saving' || exiting || step !== targetStep
+   useEffect(() => {
+@@ -104,7 +105,7 @@ export function DesktopOnboarding({
+   return <>
+     <OnboardingSurface exiting={exiting}>
+       <section key={step} ref={page} className={`${css.page} ${dialog !== null ? css.blurred : ''}`} data-desktop-onboarding={step} lang={locale} aria-labelledby="desktop-onboarding-title" aria-busy={busy}>
+-        {step === 'welcome' && <OnboardingWelcomeStep t={t} locale={locale} heading={heading} busy={busy} onStart={() => { click('next'); go('credit') }} />}
++        {step === 'welcome' && <OnboardingWelcomeStep t={t} locale={locale} heading={heading} busy={busy} onStart={() => { click('next'); go(platformAccount ? 'credit' : 'purpose') }} />}
+         {step === 'credit' && <OnboardingCreditStep t={t} locale={locale} heading={heading} busy={busy}
+           funded={state.creditFunded} canRecharge={canRecharge} onContinue={() => { click('continue'); go('purpose') }} onRecharge={() => { click('charge'); recharge() }} onLater={() => { click('later'); later() }} />}
+         {step === 'purpose' && <OnboardingPurposeStep t={t} heading={heading} busy={busy} purpose={progress.purpose}
+@@ -113,7 +114,7 @@ export function DesktopOnboarding({
+           onSelect={(process) => { void update({ process }) }} onComplete={() => { click('next'); void complete('completed') }} />}
+         {state.error !== null && <div className={css.status} role="alert">{t('onboardingSaveFailed')}<Button disabled={busy} onClick={() => { void retry() }}>{t('onboardingRetry')}</Button></div>}
+         {step !== 'welcome' && <footer className={css.navigation}>
+-          <button type="button" disabled={busy} onClick={() => { click('back'); go(step === 'credit' ? 'welcome' : step === 'purpose' ? 'credit' : 'purpose') }}><span className={css.backIcon} style={{ maskImage: `url(${backIcon})` }} aria-hidden="true" />{t('onboardingBack')}</button>
++          <button type="button" disabled={busy} onClick={() => { click('back'); go(step === 'credit' ? 'welcome' : step === 'purpose' ? (platformAccount ? 'credit' : 'welcome') : 'purpose') }}><span className={css.backIcon} style={{ maskImage: `url(${backIcon})` }} aria-hidden="true" />{t('onboardingBack')}</button>
+           <button type="button" disabled={busy} onClick={() => { click('skip'); setDialog(step === 'credit' ? 'credit-skip' : 'skip') }}>{t('onboardingSkip')}</button>
+         </footer>}
+       </section>
+diff --git a/packages/client/ui-settings-account/src/client/SignInDialog.tsx b/packages/client/ui-settings-account/src/client/SignInDialog.tsx
+index f07b505d8a..ba64438672 100644
+--- a/packages/client/ui-settings-account/src/client/SignInDialog.tsx
++++ b/packages/client/ui-settings-account/src/client/SignInDialog.tsx
+@@ -15,7 +15,8 @@ export function SignInDialog({ account, colorScheme, start, cancel, close, useAp
+   start: () => Promise<void>
+   cancel: (id: SignInAttemptId) => Promise<void>
+   close: () => void
+-  useApiKey: () => void
++  /** Offer an API key instead of signing in; absent when the deployment allows only its account. */
++  useApiKey?: () => void
+   t: (key: AccountKey) => string
+ }) {
+   const [busy, setBusy] = useState(false)
+@@ -75,8 +76,8 @@ export function SignInDialog({ account, colorScheme, start, cancel, close, useAp
+       </p>}
+     </div>
+     <div className={css.actions}>
+-      <Button variant="outline" className={css.secondaryButton} disabled={committing || busy}
+-        onClick={active ? dismiss : useApiKey}>{t(active ? 'cancel' : 'addApiKey')}</Button>
++      {(active || useApiKey !== undefined) && <Button variant="outline" className={css.secondaryButton} disabled={committing || busy}
++        onClick={active ? dismiss : useApiKey}>{t(active ? 'cancel' : 'addApiKey')}</Button>}
+       <Button variant="primary" className={css.primaryButton} disabled={busy || committing || waiting || account.view === undefined}
+         aria-label={waiting ? t('waiting') : undefined} onClick={() => { void run(retry) }}>
+         {waiting ? <IconLoadingOutlineRegular className={css.spinner} /> : t(expired || error ? 'retry' : 'signIn')}
+diff --git a/packages/client/ui-settings-account/src/client/index.ts b/packages/client/ui-settings-account/src/client/index.ts
+index cfcc57b44b..17db79b4f7 100644
+--- a/packages/client/ui-settings-account/src/client/index.ts
++++ b/packages/client/ui-settings-account/src/client/index.ts
+@@ -159,6 +159,7 @@ export function apply(ctx: Context): void {
+     subscribeSessionExpired: listener => ctx.remote.$on('deepseek-account/session-expired', listener),
+     subscribeModelSignInRequired: listener => ctx.remote.$on('deepseek-account/model-sign-in-required', listener),
+     ...nativePlatform === undefined ? {} : { openPlatformPage: platformPageOpener(refreshAccount) },
++    platformAccount: config.platformAccount,
+     refreshAccount,
+     contactUs() {
+       // Sample the account, build and environment before awaiting native information, so
+@@ -256,6 +257,7 @@ export function apply(ctx: Context): void {
+         hooks: { account: operations.hooks.account, onboarding: controller.state },
+         // Onboarding's recharge return re-reads profile and balance only.
+         ...nativePlatform === undefined ? {} : { openPlatformPage: platformPageOpener(refresh) },
++        platformAccount: config.platformAccount,
+         update: (change: OnboardingChange) => controller.update(change),
+         complete: (reason: 'completed' | 'skipped') => controller.complete(reason),
+         retry: () => controller.retry(),
+@@ -291,7 +293,7 @@ export function apply(ctx: Context): void {
+     const update = () => {
+       if (snapshot.view?.status === 'credential-stored') {
+         unregister ??= ctx.slots.register({
+-          name: 'settings.section', id: 'account', order: -10, label: () => t('nav'),
++          name: 'settings.section', id: 'account', order: -10, label: () => t(config.platformAccount ? 'nav' : 'navAccount'),
+           locale: 'settings.account', inject: () => operations,
+         }, AccountSection)
+       } else {
+diff --git a/packages/client/ui-settings-account/src/client/locales.ts b/packages/client/ui-settings-account/src/client/locales.ts
+index e6f743a4a5..b4f1eb0c4e 100644
+--- a/packages/client/ui-settings-account/src/client/locales.ts
++++ b/packages/client/ui-settings-account/src/client/locales.ts
+@@ -15,7 +15,7 @@ export const en = {
+   platformFailed: 'Could not complete the operation. Try again.', platformRetry: 'Retry',
+   loading: 'Loading…', backToHarness: 'Back to DeepSeek Harness',
+   settings: 'Settings', contactUs: 'Feedback', menu: 'Account menu',
+-  nav: 'Account', signedIn: 'Signed in to DeepSeek', signedOut: 'Not signed in',
++  nav: 'Account', navAccount: 'Account', signedIn: 'Signed in to DeepSeek', signedOut: 'Not signed in',
+   signIn: 'Sign in', signOut: 'Sign out',
+   signOutUnknownDescription: 'Could not check running tasks. Signing out may interrupt tasks using this account. Sign out now?',
+   signOutDescription: 'Signing out will not delete any data. You can sign in to this account again.',
+@@ -50,7 +50,7 @@ export const zh: Record<AccountKey, string> = {
+   platformFailed: '操作未完成，请重试', platformRetry: '重试',
+   loading: '加载中…', backToHarness: '返回 DeepSeek Harness',
+   settings: '设置', contactUs: '意见反馈', menu: '账号菜单',
+-  nav: '账号与余额', signedIn: '已登录 DeepSeek', signedOut: '尚未登录',
++  nav: '账号与余额', navAccount: '账号', signedIn: '已登录 DeepSeek', signedOut: '尚未登录',
+   signIn: '登录', signOut: '退出登录',
+   signOutUnknownDescription: '暂时无法确认任务状态。退出登录可能会中断使用此账号的任务，是否继续？',
+   signOutDescription: '退出登录不会丢失任何数据，你仍可以登录此账号。',
+diff --git a/packages/client/ui-settings-account/src/client/onboarding-contract.ts b/packages/client/ui-settings-account/src/client/onboarding-contract.ts
+index 4d3815d90e..926ce05c15 100644
+--- a/packages/client/ui-settings-account/src/client/onboarding-contract.ts
++++ b/packages/client/ui-settings-account/src/client/onboarding-contract.ts
+@@ -28,6 +28,8 @@ export interface DesktopOnboardingProps {
+   account: AccountSnapshot
+   /** Desktop-only: show the shared native recharge page; absent in ordinary browsers. */
+   openPlatformPage?: PlatformPages['open']
++  /** Include the Platform credit step; absent means included. */
++  platformAccount?: boolean
+   update(this: void, change: OnboardingChange): Promise<boolean>
+   complete(this: void, reason: 'completed' | 'skipped'): Promise<boolean>
+   retry(this: void): Promise<boolean>
+diff --git a/packages/client/ui-settings-account/src/contact-config.ts b/packages/client/ui-settings-account/src/contact-config.ts
+index b1afcbf049..391a0337df 100644
+--- a/packages/client/ui-settings-account/src/contact-config.ts
++++ b/packages/client/ui-settings-account/src/contact-config.ts
+@@ -11,6 +11,12 @@ export interface ContactConfig {
+   bonusAckRetryDelayMs: number
+   /** Ceiling for the acknowledgement retry backoff. */
+   bonusAckRetryMaxDelayMs: number
++  /**
++   * Show DeepSeek Platform account surfaces: balance, usage and top-up, the onboarding credit
++   * step, and the "add API key" sign-in alternative. Deployments whose account provider is not
++   * Platform turn this off.
++   */
++  platformAccount: boolean
+ }
+ /** Validate public questionnaire options. */
+ export const ContactConfigFields = {
+@@ -18,6 +24,7 @@ export const ContactConfigFields = {
+   contactSource: z.string().default(''),
+   bonusAckRetryDelayMs: z.number().min(1).default(1_000),
+   bonusAckRetryMaxDelayMs: z.number().min(1).default(60_000),
++  platformAccount: z.boolean().default(true),
+ }
+ /** Validate public questionnaire options. */
+ export const ContactConfig: z<Partial<ContactConfig>, ContactConfig> = z.object(ContactConfigFields)
+diff --git a/packages/client/ui-settings-account/src/index.ts b/packages/client/ui-settings-account/src/index.ts
+index e37bccc073..2cf73b80da 100644
+--- a/packages/client/ui-settings-account/src/index.ts
++++ b/packages/client/ui-settings-account/src/index.ts
+@@ -29,6 +29,7 @@ export const Config = z.object({
+   contactSource: ContactConfigFields.contactSource,
+   bonusAckRetryDelayMs: ContactConfigFields.bonusAckRetryDelayMs,
+   bonusAckRetryMaxDelayMs: ContactConfigFields.bonusAckRetryMaxDelayMs,
++  platformAccount: ContactConfigFields.platformAccount,
+   version: OnboardingSettingsFields.version.volatile(),
+   step: OnboardingSettingsFields.step.volatile(),
+   purpose: OnboardingSettingsFields.purpose.volatile(),
+@@ -51,6 +52,7 @@ export function apply(ctx: Context, config: Config): void {
+     table.push({ kind: 'global', name: CONTACT_CONFIG_GLOBAL, value: {
+       contactFormUrl: config.contactFormUrl, contactSource: config.contactSource,
+       bonusAckRetryDelayMs: config.bonusAckRetryDelayMs, bonusAckRetryMaxDelayMs: config.bonusAckRetryMaxDelayMs,
++      platformAccount: config.platformAccount,
+     } satisfies ContactConfig })
+   })
+ }
+diff --git a/packages/client/ui-settings-account/tests/account.client.spec.tsx b/packages/client/ui-settings-account/tests/account.client.spec.tsx
+index cae2d7fac0..de1ed744d2 100644
+--- a/packages/client/ui-settings-account/tests/account.client.spec.tsx
++++ b/packages/client/ui-settings-account/tests/account.client.spec.tsx
+@@ -108,6 +108,22 @@ it.each([en, zh])('renders account cards without inventing profile or balance da
+   await expect(`${screen.getByRole('region').textContent}\n`).toMatchFileSnapshot(`./expected/account-${copy === en ? 'en' : 'zh'}.txt`)
+ })
+ 
++it('omits balance, usage and top-up for a deployment without a Platform account', () => {
++  const operations = { ...operationsOf({ status: 'credential-stored', attempt: null }, {
++    profile: { status: 'ready', value: { id: null, name: 'alice-gh', contact: null } },
++    balance: { status: 'ready', value: [], bonusWallets: [] },
++  }), platformAccount: false }
++  render(<AccountSection {...({} as GlobalStandardProps)} {...operations}
++    useAccount={selector => selector(operations.hooks.account.getSnapshot())}
++    useTheme={selector => selector(operations.hooks.theme.getSnapshot())}
++    close={() => {}} t={key => key in en ? en[key as AccountKey] : key} />)
++  expect(screen.getByText('alice-gh')).toBeTruthy()
++  expect(screen.getByRole('region', { name: en.navAccount })).toBeTruthy()
++  expect(screen.queryByText(en.balance)).toBeNull()
++  expect(screen.queryByText(en.topUp)).toBeNull()
++  expect(screen.queryByText(en.usage)).toBeNull()
++})
++
+ it('starts sign-in and disables cancellation during persistence', async () => {
+   const operations = mount({ status: 'signed-out', attempt: null })
+   await act(async () => { fireEvent.click(screen.getByRole('button', { name: en.signIn })) })
+diff --git a/packages/client/ui-settings-account/tests/config.client.spec.ts b/packages/client/ui-settings-account/tests/config.client.spec.ts
+index a5a33dca61..aa86f35263 100644
+--- a/packages/client/ui-settings-account/tests/config.client.spec.ts
++++ b/packages/client/ui-settings-account/tests/config.client.spec.ts
+@@ -14,7 +14,7 @@ it('injects configured contact options and removes the listener on disposal', as
+   ctx.emit('webserver/index-inject', table)
+   expect(table).toEqual([{ kind: 'global', name: CONTACT_CONFIG_GLOBAL, value: {
+     contactFormUrl: config.contactFormUrl, contactSource: config.contactSource,
+-    bonusAckRetryDelayMs: 25, bonusAckRetryMaxDelayMs: 100,
++    bonusAckRetryDelayMs: 25, bonusAckRetryMaxDelayMs: 100, platformAccount: true,
+   } }])
+   await ctx.fiber.dispose()
+   table.length = 0
+@@ -22,6 +22,15 @@ it('injects configured contact options and removes the listener on disposal', as
+   expect(table).toEqual([])
+ })
+ 
++it('publishes a deployment without Platform account surfaces', async () => {
++  const ctx = new Context()
++  onTestFinished(() => ctx.fiber.dispose())
++  await ctx.plugin({ Config, apply }, { platformAccount: false })
++  const table: IndexInjection[] = []
++  ctx.emit('webserver/index-inject', table)
++  expect(table[0]?.kind === 'global' && (table[0].value as { platformAccount: boolean }).platformAccount).toBe(false)
++})
++
+ it('hides the generated account form and releases its policy on disposal', async () => {
+   const ctx = new Context()
+   onTestFinished(() => ctx.fiber.dispose())
+diff --git a/packages/client/ui-settings-account/tests/desktop-onboarding.client.spec.tsx b/packages/client/ui-settings-account/tests/desktop-onboarding.client.spec.tsx
+index 8152510505..cdaf59700b 100644
+--- a/packages/client/ui-settings-account/tests/desktop-onboarding.client.spec.tsx
++++ b/packages/client/ui-settings-account/tests/desktop-onboarding.client.spec.tsx
+@@ -8,7 +8,7 @@ import { en, zh } from '../src/client/locales.ts'
+ 
+ afterEach(() => { cleanup(); vi.unstubAllGlobals() })
+ 
+-function mount(step: DesktopOnboardingState['progress']['step'] = 'welcome', balance: 'zero' | 'positive' | 'bonus' | 'failed' | 'loading' = 'positive', status: DesktopOnboardingState['status'] = 'ready', copy: typeof zh = zh, creditFunded = false) {
++function mount(step: DesktopOnboardingState['progress']['step'] = 'welcome', balance: 'zero' | 'positive' | 'bonus' | 'failed' | 'loading' = 'positive', status: DesktopOnboardingState['status'] = 'ready', copy: typeof zh = zh, creditFunded = false, platformAccount = true) {
+   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+   const track = vi.fn()
+   const complete = vi.fn(async () => true)
+@@ -37,7 +37,7 @@ function mount(step: DesktopOnboardingState['progress']['step'] = 'welcome', bal
+       }}
+       account={{ view: { status: 'credential-stored', attempt: null, links: { usageUrl: 'https://example.com/usage', topUpUrl: 'https://example.com/top_up' } },
+         failed: false, details: balance === 'loading' ? {} : { balance: balance === 'failed' ? { status: 'failed' } : { status: 'ready', bonusWallets: balance === 'bonus' ? [{ currency: 'CNY', balance: '1' }] : [], value: [{ currency: 'CNY', balance: balance === 'zero' || balance === 'bonus' ? '0E-16' : '12.34' }] } } }}
+-      openPlatformPage={openPlatformPage} />
++      openPlatformPage={openPlatformPage} platformAccount={platformAccount} />
+   }
+   render(<App />)
+   return {
+@@ -58,6 +58,22 @@ it('keeps welcome mandatory and enters credit only through Start', async () => {
+   expect(operations.update).toHaveBeenCalledWith({ step: 'credit' })
+ })
+ 
++it('goes from welcome straight to purpose, and back, without a Platform account', async () => {
++  const operations = mount('welcome', 'positive', 'ready', zh, false, false)
++  await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.onboardingStart })) })
++  expect(operations.update).toHaveBeenCalledWith({ step: 'purpose' })
++  expect(screen.getByRole('checkbox', { name: zh.onboardingOffice })).toBeTruthy()
++  await act(async () => { fireEvent.click(screen.getByRole('button', { name: zh.onboardingBack })) })
++  expect(operations.update).toHaveBeenLastCalledWith({ step: 'welcome' })
++  expect(screen.queryByRole('heading', { name: zh.onboardingCredit })).toBeNull()
++})
++
++it('resumes progress saved on credit at purpose without a Platform account', () => {
++  mount('credit', 'zero', 'ready', zh, false, false)
++  expect(screen.queryByRole('heading', { name: zh.onboardingCredit })).toBeNull()
++  expect(screen.getByRole('checkbox', { name: zh.onboardingOffice })).toBeTruthy()
++})
++
+ it('covers the application without showing an unfinished step while durable settings load', () => {
+   mount('welcome', 'positive', 'loading')
+   expect(screen.getByRole('status').textContent).toBe(zh.onboardingLoading)
+diff --git a/packages/client/ui-settings-account/tests/sign-in-dialog.client.spec.tsx b/packages/client/ui-settings-account/tests/sign-in-dialog.client.spec.tsx
+index c03b3613d8..df44fc4078 100644
+--- a/packages/client/ui-settings-account/tests/sign-in-dialog.client.spec.tsx
++++ b/packages/client/ui-settings-account/tests/sign-in-dialog.client.spec.tsx
+@@ -43,6 +43,13 @@ it.each([en, zh])('shows waiting actions and cancels before dismissing', async (
+   expect(props.cancel).toHaveBeenCalledExactlyOnceWith(id)
+   expect(props.close).toHaveBeenCalledOnce()
+ })
++it('offers only sign in when the deployment has no API-key alternative', () => {
++  const { useApiKey: _omitted, ...props } = dialogProps(null)
++  render(<SignInDialog {...props} />)
++  expect(screen.queryByRole('button', { name: en.addApiKey })).toBeNull()
++  expect(screen.getByRole('button', { name: en.signIn })).toBeTruthy()
++})
++
+ it('keeps an admitted credential commit open on Escape and close', () => {
+   const props = mount({ id, phase: 'committing' })
+   fireEvent.keyDown(document, { key: 'Escape' })

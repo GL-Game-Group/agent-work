@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Fri, 2 Oct 2026 03:12:51 +0800
+Subject: [PATCH 02/11] desktop: keep CFBundleLocalizations in the macOS
+ Info.plist
+
+The mac config declared extendInfo twice, so the microphone entry replaced the localization list and packaged apps shipped without CFBundleLocalizations. Merge both keys into one extendInfo and name the product in the microphone prompt.
+
+diff --git a/apps/desktop/electron-builder.config.d.mts b/apps/desktop/electron-builder.config.d.mts
+index 4e978ec00f..b1989364f0 100644
+--- a/apps/desktop/electron-builder.config.d.mts
++++ b/apps/desktop/electron-builder.config.d.mts
+@@ -24,7 +24,7 @@ export interface DesktopElectronBuilderConfig {
+     ...{ readonly from: string, readonly to: 'tray.ico' }[],
+   ]
+   readonly mac: {
+-    readonly extendInfo: { readonly NSMicrophoneUsageDescription: string }
++    readonly extendInfo: { readonly CFBundleLocalizations: readonly string[], readonly NSMicrophoneUsageDescription: string }
+     readonly entitlements: string
+     readonly entitlementsInherit: string
+     readonly identity: string | undefined
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index 7b06625ba1..fbb1c0a0f9 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -152,12 +152,14 @@ export function createElectronBuilderConfig(
+     mac: {
+       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
+       category: 'public.app-category.developer-tools',
+-      // macOS matches the application locale against this bundle, not Electron Framework resources.
+-      extendInfo: { CFBundleLocalizations: ['en', 'zh_CN'] },
++      extendInfo: {
++        // macOS matches the application locale against this bundle, not Electron Framework resources.
++        CFBundleLocalizations: ['en', 'zh_CN'],
++        NSMicrophoneUsageDescription: `${productName} uses your microphone to transcribe speech into message drafts.`,
++      },
+       identity: macOSSigning?.signingIdentity,
+       forceCodeSigning: true,
+       hardenedRuntime: true,
+-      extendInfo: { NSMicrophoneUsageDescription: 'DeepSeek Harness uses your microphone to transcribe speech into message drafts.' },
+       entitlements: fileURLToPath(new URL('./macos-entitlements.plist', import.meta.url)),
+       entitlementsInherit: fileURLToPath(new URL('./macos-entitlements.plist', import.meta.url)),
+       // ASAR-unpacked native runtime files are pre-signed; PAK resources are sealed by their enclosing bundle.
+diff --git a/apps/desktop/tests/macos-signature.spec.ts b/apps/desktop/tests/macos-signature.spec.ts
+index c8d9f859af..b27abf888d 100644
+--- a/apps/desktop/tests/macos-signature.spec.ts
++++ b/apps/desktop/tests/macos-signature.spec.ts
+@@ -45,6 +45,7 @@ describe('desktop macOS release signature', () => {
+     expect(config.protocols).toEqual([{ name: 'DeepSeek Harness', schemes: ['dsh'] }])
+     expect(portablePath(config.directories.output)).toContain('/.desktop-build/targets/mac-arm64/artifacts')
+     expect(config.mac.extendInfo.NSMicrophoneUsageDescription).toContain('microphone')
++    expect(config.mac.extendInfo.CFBundleLocalizations).toEqual(['en', 'zh_CN'])
+     expect(config.mac.entitlementsInherit).toBe(config.mac.entitlements)
+     const entitlements = readFileSync(config.mac.entitlements, 'utf8')
+     for (const key of ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.allow-unsigned-executable-memory',

@@ -1,0 +1,451 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Sun, 4 Oct 2026 22:21:14 +0800
+Subject: [PATCH 10/11] desktop: choose the account provider's server from the
+ welcome window
+
+
+diff --git a/apps/desktop/renderer/welcome.css b/apps/desktop/renderer/welcome.css
+index 3b4da2defb..76846d914b 100644
+--- a/apps/desktop/renderer/welcome.css
++++ b/apps/desktop/renderer/welcome.css
+@@ -341,3 +341,24 @@ body {
+ .actions .welcome-loading { color: inherit; }
+ 
+ .auth-waiting .copy-link:disabled { cursor: default; }
++
++/* The account provider's server setting (shown only when the provider has one). */
++.welcome > #server-form {
++  grid-row: 2;
++  grid-column: 1;
++}
++
++.server-current {
++  margin-top: 8px !important;
++  color: var(--dsw-alias-label-caption);
++  font-size: 13px !important;
++  line-height: 20px !important;
++  white-space: normal;
++}
++
++.server-default {
++  margin: 8px 0 0;
++  color: var(--dsw-alias-label-caption);
++  font-size: 13px;
++  line-height: 20px;
++}
+diff --git a/apps/desktop/src/client/WelcomePage.tsx b/apps/desktop/src/client/WelcomePage.tsx
+index 6beb111040..a0e211c086 100644
+--- a/apps/desktop/src/client/WelcomePage.tsx
++++ b/apps/desktop/src/client/WelcomePage.tsx
+@@ -4,9 +4,10 @@ import type { FormEvent } from 'react'
+ import { Toast } from '@deepseek-ai/dsh-client-ui-primitives/src/Toast.tsx'
+ import { StateDot } from '@deepseek-ai/dsh-client-ui-primitives/src/StateDot.tsx'
+ import type { AccountView } from '@deepseek-ai/dsh-deepseek-account/types'
+-import type { WelcomeApi } from '../welcome-api.ts'
++import { welcomeServerOrigin, type WelcomeApi, type WelcomeServer } from '../welcome-api.ts'
++import { formatDesktopMessage } from '../locale.ts'
+ 
+-type Page = 'entry' | 'key' | 'account'
++type Page = 'entry' | 'key' | 'account' | 'server'
+ 
+ /**
+  * Render the standalone welcome flow using shell-owned operations and localized copy.
+@@ -35,6 +36,10 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+   const input = useRef<HTMLInputElement>(null)
+   const keyButton = useRef<HTMLButtonElement>(null)
+   const focusEntry = useRef(false)
++  const [server, setServer] = useState<WelcomeServer>()
++  const [serverDraft, setServerDraft] = useState('')
++  const [serverError, setServerError] = useState('')
++  const serverInput = useRef<HTMLInputElement>(null)
+ 
+   function navigate(next: Page) {
+     pageRef.current = next
+@@ -61,6 +66,9 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+       })
+     }
+     takeNotice()
++    void api.readServer?.().then((value) => { if (mounted.current) setServer(value) }).catch((_unavailable: unknown) => {
++      // Without a server setting the welcome window keeps its sign-in choices only.
++    })
+     const stop = api.onAccountState((state) => {
+       revision.current++
+       takeNotice()
+@@ -73,6 +81,7 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+     if (page === 'entry' && visiblePage.current !== 'entry') void api.analytics?.('auth_page_view', {})
+     visiblePage.current = page
+     if (page === 'key') input.current?.focus()
++    else if (page === 'server') serverInput.current?.focus()
+     else if (page === 'entry' && focusEntry.current) {
+       focusEntry.current = false
+       keyButton.current?.focus()
+@@ -112,6 +121,28 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+       if (mounted.current) setBusy(false)
+     }
+   }
++  async function saveServer(event: FormEvent | null, restore = false) {
++    event?.preventDefault()
++    if (busyRef.current || api.setServer === undefined) return
++    const origin = restore ? null : welcomeServerOrigin(serverDraft)
++    if (origin === undefined) { setServerError(m.welcomeServerInvalid); serverInput.current?.focus(); return }
++    busyRef.current = true
++    setBusy(true)
++    setServerError('')
++    try {
++      const result = await api.setServer(origin)
++      if (!mounted.current) return
++      if (!result.ok) { setServerError(m.welcomeServerFailed); return }
++      setServer(await api.readServer?.())
++      focusEntry.current = true
++      navigate('entry')
++    } catch {
++      if (mounted.current) setServerError(m.welcomeServerFailed)
++    } finally {
++      busyRef.current = false
++      if (mounted.current) setBusy(false)
++    }
++  }
+   async function skip() {
+     if (busyRef.current) return
+     busyRef.current = true
+@@ -170,7 +201,7 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+   const title = phase === 'initializing' ? m.welcomeAuthStarting
+     : waiting ? m.welcomeAuthWaiting : phase === 'expired' ? m.welcomeAuthExpired
+       : phase === 'failed' ? m.welcomeAuthFailed : m.welcomeAuthExchanging
+-  const heading = page === 'entry' ? 'welcome-heading' : page === 'key' ? 'key-title' : 'auth-status'
++  const heading = page === 'entry' ? 'welcome-heading' : page === 'key' ? 'key-title' : page === 'server' ? 'server-title' : 'auth-status'
+ 
+   return <>
+     {expiryNotice && <Toast text={m.welcomeSessionExpired} onDone={() => { setExpiryNotice(false) }} />}
+@@ -180,6 +211,8 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+       <div id="tagline" className="tagline" hidden={page !== 'entry'}>
+         <h1 id="welcome-heading"><span>{m.welcomeTaglineBefore}</span><em>{m.welcomeTaglineBrand}</em><span>{m.welcomeTaglineAfter}</span></h1>
+         <p id="welcome-description">{m.welcomeDescription}</p>
++        {server?.overridden === true && <p id="welcome-server" className="server-current" role="note">
++          {formatDesktopMessage(m.welcomeServerCurrent, { origin: server.current })}</p>}
+       </div>
+       <form id="key-form" className="key-form" hidden={page !== 'key'} noValidate onSubmit={(event) => { void saveKey(event) }} aria-busy={busy}>
+         <header className="key-heading"><h1 id="key-title">{m.welcomeKeyTitle}</h1><p id="key-description">{m.welcomeKeyDescription}</p></header>
+@@ -191,6 +224,17 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+           <p id="key-error" className="key-error" role="alert" hidden={error === ''}>{error}</p>
+         </div>
+       </form>
++      {server !== undefined && <form id="server-form" className="key-form" hidden={page !== 'server'} noValidate onSubmit={(event) => { void saveServer(event) }} aria-busy={busy}>
++        <header className="key-heading"><h1 id="server-title">{m.welcomeServerTitle}</h1><p id="server-description">{m.welcomeServerDescription}</p></header>
++        <div className="key-field">
++          <label className="visually-hidden" htmlFor="server-input">{m.welcomeServerTitle}</label>
++          <input ref={serverInput} id="server-input" type="url" inputMode="url" autoCapitalize="off" spellCheck={false} required
++            aria-describedby="server-description server-default server-error" aria-invalid={serverError !== ''} placeholder={m.welcomeServerPlaceholder}
++            value={serverDraft} disabled={busy} onChange={(event) => { setServerDraft(event.target.value); setServerError('') }} />
++          <p id="server-default" className="server-default">{formatDesktopMessage(m.welcomeServerDefault, { origin: server.base })}</p>
++          <p id="server-error" className="key-error" role="alert" hidden={serverError === ''}>{serverError}</p>
++        </div>
++      </form>}
+       <section id="auth-page" className={`key-heading ${waiting ? 'auth-waiting' : phase === 'expired' ? 'auth-expired' : ''}`}
+         hidden={page !== 'account'} aria-live="polite">
+         <h1 id="auth-status">{title}</h1>
+@@ -212,7 +256,17 @@ export function Welcome({ api }: { api: WelcomeApi }) {
+       <div id="entry-actions" className="actions" hidden={page !== 'entry'}>
+         <button id="sign-in" className="primary" type="button" onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'sign_in' }); void start() }}>{m.welcomeSignIn}</button>
+         <button ref={keyButton} id="api-key" className="secondary" type="button" hidden={api.saveApiKey === undefined} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'api-key' }); navigate('key') }}>{m.welcomeApiKey}</button>
++        <button id="server-settings" className="back" type="button" hidden={server === undefined}
++          onClick={() => { setServerDraft(server?.current ?? ''); setServerError(''); navigate('server') }}>{m.welcomeServerButton}</button>
+       </div>
++      {server !== undefined && <div id="server-actions" className="actions" hidden={page !== 'server'}>
++        <button id="save-server" className="primary" type="submit" form="server-form" disabled={busy || serverDraft.trim() === ''}>{m.welcomeServerSave}</button>
++        <button id="reset-server" className="secondary" type="button" disabled={busy || !server.overridden} onClick={() => { void saveServer(null, true) }}>{m.welcomeServerReset}</button>
++        <button id="back-from-server" className="back" type="button" disabled={busy} onClick={() => {
++          if (busyRef.current) return
++          setServerError(''); focusEntry.current = true; navigate('entry')
++        }}>{m.welcomeServerBack}</button>
++      </div>}
+       <div id="key-actions" className="actions" hidden={page !== 'key'}>
+         <button id="save-key" className="primary" type="submit" form="key-form" disabled={busy || draft.trim() === ''}>{m.welcomeKeySave}</button>
+         <button id="skip-key" className="secondary" type="button" disabled={busy} onClick={() => { void skip() }}>{m.welcomeKeyLater}</button>
+diff --git a/apps/desktop/src/locale.ts b/apps/desktop/src/locale.ts
+index 807879dafa..99ab8f9d4e 100644
+--- a/apps/desktop/src/locale.ts
++++ b/apps/desktop/src/locale.ts
+@@ -95,6 +95,17 @@ export const en = {
+   welcomeKeyLater: 'Set up later',
+   welcomeKeyBack: 'Back to sign in',
+   welcomeSessionExpired: 'You have signed out of your account, please log in again.',
++  welcomeServerButton: 'Server settings',
++  welcomeServerTitle: 'Server address',
++  welcomeServerDescription: 'Change it only when your administrator asks you to. Changing the server signs you out.',
++  welcomeServerPlaceholder: 'https://example.com',
++  welcomeServerSave: 'Save',
++  welcomeServerReset: 'Restore default',
++  welcomeServerBack: 'Back to sign in',
++  welcomeServerInvalid: 'Enter an address that starts with https://',
++  welcomeServerFailed: 'Could not save. Try again.',
++  welcomeServerDefault: 'Default: {origin}',
++  welcomeServerCurrent: 'Connected to {origin}, not the default server',
+   welcomeKeyBlank: 'Enter an API key.',
+   welcomeKeyInvalid: 'Enter the API key itself, without quotes, spaces, or an environment-variable assignment.',
+   welcomeKeyFailed: 'Could not save the API key. Please try again.',
+@@ -266,6 +277,17 @@ export const zh = {
+   welcomeKeyLater: '稍后配置',
+   welcomeKeyBack: '返回登录',
+   welcomeSessionExpired: '登录信息已失效，请重新登录',
++  welcomeServerButton: '服务器设置',
++  welcomeServerTitle: '服务器地址',
++  welcomeServerDescription: '只在管理员要求时修改。更换服务器后需要重新登录。',
++  welcomeServerPlaceholder: 'https://example.com',
++  welcomeServerSave: '保存',
++  welcomeServerReset: '恢复默认',
++  welcomeServerBack: '返回登录',
++  welcomeServerInvalid: '请填写以 https:// 开头的地址',
++  welcomeServerFailed: '保存失败，请重试',
++  welcomeServerDefault: '默认：{origin}',
++  welcomeServerCurrent: '当前连接 {origin}，不是默认服务器',
+   welcomeKeyBlank: '请输入 API 密钥。',
+   welcomeKeyInvalid: '请仅输入 API 密钥，不要包含引号、空格或环境变量赋值。',
+   welcomeKeyFailed: '无法保存 API 密钥，请重试。',
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index 4227adcf50..7f18de6818 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -1169,6 +1169,8 @@ async function main(): Promise<void> {
+           }
+           await clipboard.writeText(platformLoginUrl(state.attempt.authorizeUrl))
+         },
++        readServer: async () => welcomeBackend?.server(),
++        setServer: async origin => welcomeBackend === undefined ? { ok: false } : welcomeBackend.setServer(origin),
+         saveApiKey: async (apiKey) => {
+           if (backend.host === undefined || welcomeBackend === undefined) return { ok: false }
+           const saved = await welcomeBackend.save(apiKey)
+diff --git a/apps/desktop/src/preload-welcome.ts b/apps/desktop/src/preload-welcome.ts
+index 61e81273ec..9f9da8de1a 100644
+--- a/apps/desktop/src/preload-welcome.ts
++++ b/apps/desktop/src/preload-welcome.ts
+@@ -4,7 +4,7 @@ import type { AccountView, SignInAttemptId } from '@deepseek-ai/dsh-deepseek-acc
+ import { contextBridge, ipcRenderer } from 'electron'
+ import { resolveDesktopLocale } from './locale.ts'
+ import { ACCOUNT_ONLY_ARGUMENT } from './ipc.ts'
+-import { WELCOME_IPC, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult } from './welcome-api.ts'
++import { WELCOME_IPC, type WelcomeApi, type WelcomeNotice, type WelcomeSaveResult, type WelcomeServer } from './welcome-api.ts'
+ 
+ const prefix = '--dsh-welcome-locale='
+ const locale = process.argv.find(argument => argument.startsWith(prefix))?.slice(prefix.length)
+@@ -19,6 +19,8 @@ const api: WelcomeApi = {
+   startSignIn: () => ipcRenderer.invoke(WELCOME_IPC.start) as Promise<AccountView>,
+   cancelSignIn: (id: SignInAttemptId) => ipcRenderer.invoke(WELCOME_IPC.cancel, id) as Promise<AccountView>,
+   copySignInLink: (id: SignInAttemptId) => ipcRenderer.invoke(WELCOME_IPC.copyLink, id) as Promise<void>,
++  readServer: () => ipcRenderer.invoke(WELCOME_IPC.readServer) as Promise<WelcomeServer | undefined>,
++  setServer: (origin: string | null) => ipcRenderer.invoke(WELCOME_IPC.setServer, origin) as Promise<WelcomeSaveResult>,
+   onAccountState: (listener) => {
+     const receive = (_event: Electron.IpcRendererEvent, state: AccountView): void =>{  listener(state) }
+     ipcRenderer.on(WELCOME_IPC.state, receive)
+diff --git a/apps/desktop/src/welcome-api.ts b/apps/desktop/src/welcome-api.ts
+index c5c01e74d8..cd18b4fefe 100644
+--- a/apps/desktop/src/welcome-api.ts
++++ b/apps/desktop/src/welcome-api.ts
+@@ -15,8 +15,37 @@ export const WELCOME_IPC = {
+   copyLink: 'dsh-welcome:copy-link',
+   state: 'dsh-welcome:state',
+   takeNotice: 'dsh-welcome:take-notice',
++  readServer: 'dsh-welcome:read-server',
++  setServer: 'dsh-welcome:set-server',
+ } as const
+ 
++/**
++ * The account provider's server setting: a live `serverOrigin` field some providers expose
++ * (the welcome window offers it only when one exists).
++ */
++export interface WelcomeServer {
++  /** Origin in effect for this profile. */
++  readonly current: string
++  /** Origin without the member's own choice. */
++  readonly base: string
++  /** Whether the member chose a server other than the base one. */
++  readonly overridden: boolean
++}
++
++/**
++ * Normalize a server the member typed: an https origin, or http on a loopback host for local services.
++ * @param value - typed address.
++ * @returns the bare origin, or undefined when it is not one.
++ */
++export function welcomeServerOrigin(value: string): string | undefined {
++  let url: URL
++  try { url = new URL(value.trim()) } catch { return undefined }
++  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
++  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) return undefined
++  if (url.username !== '' || url.password !== '' || url.pathname !== '/' || url.search !== '' || url.hash !== '') return undefined
++  return url.origin
++}
++
+ /** Credential writes return a safe outcome without exposing Host diagnostics. */
+ export type WelcomeSaveResult = { readonly ok: true } | { readonly ok: false }
+ 
+@@ -39,6 +68,13 @@ export interface WelcomeOperations {
+   cancelSignIn(id: SignInAttemptId): Promise<AccountView>
+   /** @param id - current waiting attempt whose authorization URL is copied to the system clipboard. */
+   copySignInLink(id: SignInAttemptId): Promise<void>
++  /** @returns the account provider's server setting, or undefined when the provider has none. */
++  readServer?(): Promise<WelcomeServer | undefined>
++  /**
++   * @param origin - normalized origin to use, or null to restore the base server.
++   * @returns whether the profile accepted the change, without private error details.
++   */
++  setServer?(origin: string | null): Promise<WelcomeSaveResult>
+ 
+   /**
+    * Store the official provider's key before entering the workspace.
+diff --git a/apps/desktop/src/welcome-backend.ts b/apps/desktop/src/welcome-backend.ts
+index 54ab46d85e..161a07c852 100644
+--- a/apps/desktop/src/welcome-backend.ts
++++ b/apps/desktop/src/welcome-backend.ts
+@@ -3,6 +3,7 @@ import type { ProductEvent } from '@deepseek-ai/dsh-client-product-analytics/typ
+ 
+ import { randomUUID } from 'node:crypto'
+ import { desktopAccountBackend, type DesktopAccountBackend } from './account-backend.ts'
++import type { WelcomeServer } from './welcome-api.ts'
+ 
+ /** Metadata needed before the native entry or workspace becomes visible. */
+ export interface WelcomeState {
+@@ -28,6 +29,10 @@ export interface DesktopWelcomeBackend {
+    * @returns A safe write outcome without provider diagnostics.
+    */
+   save(apiKey: string): Promise<{ ok: boolean }>
++  /** @returns the account provider's live server setting, or undefined when no profile entry exposes one. */
++  server(): Promise<WelcomeServer | undefined>
++  /** @param origin - origin to save, or null to remove the member's choice. @returns a safe write outcome. */
++  setServer(origin: string | null): Promise<{ ok: boolean }>
+ }
+ 
+ function record(value: unknown): value is Record<string, unknown> {
+@@ -120,9 +125,32 @@ export async function connectDesktopWelcome(
+       localePreference: localePreference(namespaces),
+     }
+   }
++  // A provider exposing a live `serverOrigin` field lets members choose its server.
++  const serverEntry = async () => {
++    const settings = await invoke({ namespace: 'settings', method: 'describe', args: {} })
++    if (!record(settings) || !Array.isArray(settings.namespaces)) throw new Error('desktop welcome: missing settings namespaces')
++    const entry: unknown = settings.namespaces.find((item: unknown) => record(item) && record(item.value) && typeof item.value.serverOrigin === 'string')
++    if (!record(entry) || typeof entry.ns !== 'string' || typeof entry.revision !== 'number' || !record(entry.value)) return undefined
++    const current = entry.value.serverOrigin as string
++    const base = record(entry.base) && typeof entry.base.serverOrigin === 'string' ? entry.base.serverOrigin : current
++    const overridden = record(entry.user) && typeof entry.user.serverOrigin === 'string' && entry.user.serverOrigin !== base
++    return { ns: entry.ns, revision: entry.revision, server: { current, base, overridden } satisfies WelcomeServer }
++  }
+   return {
+     account,
+     read,
++    async server() { return (await serverEntry())?.server },
++    async setServer(origin) {
++      try {
++        const entry = await serverEntry()
++        if (entry === undefined) return { ok: false }
++        const ops = origin === null ? [{ op: 'unset', path: ['serverOrigin'] }] : [{ op: 'set', path: ['serverOrigin'], value: origin }]
++        await invoke({ namespace: 'settings', method: 'mutate', args: { ns: entry.ns, ops, expectedRevision: entry.revision } })
++        return { ok: true }
++      } catch {
++        return { ok: false }
++      }
++    },
+     async analyticsEnabled() {
+       const enabled = await invoke({ namespace: 'productAnalytics', method: 'enabled', args: {} }, AbortSignal.timeout(1000))
+       if (typeof enabled !== 'boolean') throw new Error('desktop analytics: invalid collection policy')
+diff --git a/apps/desktop/src/welcome-window.ts b/apps/desktop/src/welcome-window.ts
+index 3dc70ac380..39c8e8f49c 100644
+--- a/apps/desktop/src/welcome-window.ts
++++ b/apps/desktop/src/welcome-window.ts
+@@ -7,7 +7,7 @@ import { app, BrowserWindow, ipcMain, type BrowserWindowConstructorOptions, type
+ import type { DesktopLocale } from './locale.ts'
+ import { ACCOUNT_ONLY_ARGUMENT } from './ipc.ts'
+ import { desktopAccountOnly } from './runtime-defaults.ts'
+-import { WELCOME_IPC, type WelcomeOperations } from './welcome-api.ts'
++import { WELCOME_IPC, welcomeServerOrigin, type WelcomeOperations } from './welcome-api.ts'
+ 
+ /**
+  * Resolve the fixed-size welcome window's native material and controls.
+@@ -69,6 +69,7 @@ export async function openWelcomeWindow(locale: DesktopLocale, operations: Welco
+     for (const channel of [
+       WELCOME_IPC.analyticsEnabled, WELCOME_IPC.analytics, WELCOME_IPC.takeNotice, WELCOME_IPC.saveApiKey,
+       WELCOME_IPC.skip, WELCOME_IPC.start, WELCOME_IPC.cancel, WELCOME_IPC.copyLink,
++      WELCOME_IPC.readServer, WELCOME_IPC.setServer,
+     ]) {
+       ipcMain.removeHandler(channel)
+     }
+@@ -117,6 +118,15 @@ export async function openWelcomeWindow(locale: DesktopLocale, operations: Welco
+     if (typeof id !== 'string') throw new Error('desktop welcome: invalid attempt')
+     return operations.copySignInLink(id as SignInAttemptId)
+   })
++  ipcMain.handle(WELCOME_IPC.readServer, async (event) => { assertSender(event); return operations.readServer?.() })
++  ipcMain.handle(WELCOME_IPC.setServer, async (event, value: unknown) => {
++    assertSender(event)
++    if (operations.setServer === undefined) return { ok: false }
++    if (value === null) return operations.setServer(null)
++    const origin = typeof value === 'string' ? welcomeServerOrigin(value) : undefined
++    if (origin === undefined) return { ok: false }
++    return operations.setServer(origin)
++  })
+   window.once('closed', disposeHandlers)
+   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+   window.webContents.on('will-navigate', (event) => { event.preventDefault() })
+diff --git a/apps/desktop/tests/welcome-renderer.client.spec.tsx b/apps/desktop/tests/welcome-renderer.client.spec.tsx
+index 575c7423a0..aeff495373 100644
+--- a/apps/desktop/tests/welcome-renderer.client.spec.tsx
++++ b/apps/desktop/tests/welcome-renderer.client.spec.tsx
+@@ -6,7 +6,7 @@ import { Welcome } from '../src/client/WelcomePage.tsx'
+ import { afterEach, describe, expect, it, vi } from 'vitest'
+ import { resolveDesktopLocale } from '../src/locale.ts'
+ import type { AccountView } from '@deepseek-ai/dsh-deepseek-account/types'
+-import type { WelcomeSaveResult, WelcomeNotice } from '../src/welcome-api.ts'
++import { welcomeServerOrigin, type WelcomeSaveResult, type WelcomeNotice, type WelcomeServer } from '../src/welcome-api.ts'
+ 
+ const html = readFileSync(join(import.meta.dirname, '../renderer/welcome.html'), 'utf8')
+ afterEach(cleanup)
+@@ -341,3 +341,48 @@ it('reports each return to the welcome entry once, including account cancellatio
+   await act(async () => { pending.resolve({ links: { usageUrl: 'http://localhost/usage', topUpUrl: 'http://localhost/top_up' }, status: 'signed-out', attempt: null }) })
+   expect(view.api.analytics.mock.calls.map(([action]) => action)).toEqual(['auth_page_click', 'auth_page_view', 'auth_page_click', 'auth_page_view'])
+ })
++
++it('normalizes a typed server to an https origin, or http on loopback only', () => {
++  expect(welcomeServerOrigin(' https://agent.example.com/ ')).toBe('https://agent.example.com')
++  expect(welcomeServerOrigin('http://127.0.0.1:5173')).toBe('http://127.0.0.1:5173')
++  const refused = ['http://agent.example.com', 'https://agent.example.com/path', 'https://u:p@agent.example.com',
++    'https://agent.example.com/?a=1', 'ftp://x', 'agent.example.com', '']
++  for (const value of refused) expect(welcomeServerOrigin(value)).toBeUndefined()
++})
++
++it('lets an account-only build choose the provider server, and shows a non-default one', async () => {
++  cleanup()
++  let server: WelcomeServer = { current: 'https://test.example.com', base: 'https://agent.example.com', overridden: true }
++  const setServer = vi.fn(async (origin: string | null): Promise<WelcomeSaveResult> => {
++    server = origin === null
++      ? { current: server.base, base: server.base, overridden: false }
++      : { current: origin, base: server.base, overridden: true }
++    return { ok: true }
++  })
++  const api = {
++    takeNotice: vi.fn(async () => undefined), analytics: vi.fn(async () => {}), analyticsEnabled: async () => true,
++    onAccountState: vi.fn(() => () => {}), startSignIn: vi.fn(), cancelSignIn: vi.fn(), copySignInLink: vi.fn(),
++    ...resolveDesktopLocale('zh-CN'),
++    readServer: vi.fn(async () => server), setServer,
++  }
++  render(<Welcome api={api as never} />)
++  await act(async () => {})
++  const m = resolveDesktopLocale('zh-CN').messages
++  expect(screen.getByRole('note').textContent).toBe('当前连接 https://test.example.com，不是默认服务器')
++  fireEvent.click(screen.getByRole('button', { name: m.welcomeServerButton }))
++  const field = document.querySelector<HTMLInputElement>('#server-input')!
++  expect(field.value).toBe('https://test.example.com')
++  expect(document.querySelector('#server-default')!.textContent).toBe('默认：https://agent.example.com')
++  fireEvent.change(field, { target: { value: 'http://other.example.com' } })
++  await act(async () => { fireEvent.submit(document.querySelector('#server-form')!) })
++  expect(document.querySelector('#server-error')!.textContent).toBe(m.welcomeServerInvalid)
++  expect(setServer).not.toHaveBeenCalled()
++  fireEvent.change(field, { target: { value: 'https://next.example.com/' } })
++  await act(async () => { fireEvent.submit(document.querySelector('#server-form')!) })
++  expect(setServer).toHaveBeenLastCalledWith('https://next.example.com')
++  expect(screen.getByRole('note').textContent).toContain('https://next.example.com')
++  fireEvent.click(screen.getByRole('button', { name: m.welcomeServerButton }))
++  await act(async () => { fireEvent.click(screen.getByRole('button', { name: m.welcomeServerReset })) })
++  expect(setServer).toHaveBeenLastCalledWith(null)
++  expect(screen.queryByRole('note')).toBeNull()
++})

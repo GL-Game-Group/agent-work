@@ -1,0 +1,299 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Sun, 4 Oct 2026 23:20:50 +0800
+Subject: [PATCH 11/11] client: plugin rows in the workspace row menu
+
+
+diff --git a/packages/client/ui-workspace/src/client/contract/slots.ts b/packages/client/ui-workspace/src/client/contract/slots.ts
+index 45f8564c8e..b6a06fdb40 100644
+--- a/packages/client/ui-workspace/src/client/contract/slots.ts
++++ b/packages/client/ui-workspace/src/client/contract/slots.ts
+@@ -83,6 +83,16 @@ export interface SessionRowOwnerProps {
+ /** The row menu's open state as its owner holds it: the `useState` pair. */
+ export type MenuOpenState = readonly [open: boolean, setOpen: (open: boolean) => void]
+ 
++/** Owner share of one Workspace row's "..." menu entries. */
++export interface WorkspaceRowOwnerProps {
++  /** Workspace the row shows. */
++  workspaceId: WorkspaceId
++  /** The Workspace's directory, as the browser lists it. */
++  path: string | undefined
++  /** Row display title. */
++  title: string
++}
++
+ /**
+  * Hook every row-menu entry receives. Rows only render while the menu is
+  * open, so an entry reads it for the setter: `setOpen(false)` dismisses the
+@@ -101,6 +111,10 @@ export type UseMenuOpenState = () => MenuOpenState
+ export const menuOpenStateFactory: SlotHookFactory<'sidebar.workspaces.session.menu.item', UseMenuOpenState> =
+   (_standard, state) => () => state
+ 
++/** The same open-state hook for Workspace row menu entries. */
++export const workspaceMenuOpenStateFactory: SlotHookFactory<'sidebar.workspaces.workspace.menu.item', UseMenuOpenState> =
++  (_standard, state) => () => state
++
+ /**
+  * Owner share of the two Session-row schedule seats. Both receive only the
+  * row's Session identity: the occupant reads that Session's own scheduled
+@@ -173,6 +187,20 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+         shortcuts: HostObservable<readonly ShortcutCatalogEntry[]>
+       } }
+     }
++    /**
++     * Rows a plugin adds to one Workspace's "..." menu, after the shipped
++     * rename and delete rows, in ascending `order`. Each entry renders one
++     * `role="menuitem"` `<button>` (ui-primitives' `MenuItemButton` matches
++     * the host styling), decides its own visibility, and dismisses the menu
++     * through the injected `useMenuOpenState` hook after acting.
++     */
++    'sidebar.workspaces.workspace.menu.item': {
++      kind: 'list'
++      scope: 'root'
++      owner: WorkspaceRowOwnerProps
++      hookContext: MenuOpenState
++      inject: { hooks: { menuOpenState: SlotHookFactory<'sidebar.workspaces.workspace.menu.item', UseMenuOpenState> } }
++    }
+     /**
+      * The hover buttons at the end of one Session row, in ascending `order`,
+      * after the "..." menu trigger. ui-workspace registers `archive` (100) and
+diff --git a/packages/client/ui-workspace/src/client/index.ts b/packages/client/ui-workspace/src/client/index.ts
+index 2ecaf7e264..4ebce5563b 100644
+--- a/packages/client/ui-workspace/src/client/index.ts
++++ b/packages/client/ui-workspace/src/client/index.ts
+@@ -36,7 +36,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+ // Type-only: pulls the Session root standard-hook merge.
+ import type {} from '@deepseek-ai/dsh-client-ui-session/client'
+ import {
+-  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
++  type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, workspaceMenuOpenStateFactory, type PinSessionInjected,
+   type SessionArchiveConfirmInjected, type SessionArchiveConfirmRequest,
+   type RenameSessionInjected, type RowToast, type RowToastInjected, type RowToastState, type SessionRenameDialogInjected,
+   type WorkspaceBrowserInjected, type WorkspacePickerInjected,
+@@ -269,6 +269,7 @@ export function apply(ctx: Context): void {
+           kind: 'list', scope: 'root', inject: { hooks: { menuOpenState: menuOpenStateFactory, shortcuts: ctx.shortcuts.catalog } },
+         },
+         'sidebar.workspaces.session.row.action': { kind: 'list', scope: 'root' },
++        'sidebar.workspaces.workspace.menu.item': { kind: 'list', scope: 'root', inject: { hooks: { menuOpenState: workspaceMenuOpenStateFactory } } },
+         'sidebar.session.row.leading': { kind: 'list', scope: 'root' },
+         'sidebar.session.row.hover': { kind: 'list', scope: 'root' },
+       },
+diff --git a/packages/client/ui-workspace/src/client/rows/Rows.tsx b/packages/client/ui-workspace/src/client/rows/Rows.tsx
+index 9179773872..cc93c87fd7 100644
+--- a/packages/client/ui-workspace/src/client/rows/Rows.tsx
++++ b/packages/client/ui-workspace/src/client/rows/Rows.tsx
+@@ -39,6 +39,7 @@ type RowTranslate = WorkspaceBrowserProps['t']
+  */
+ type RowRenderSlots = PropsRenderSlots<
+   | 'sidebar.workspaces.session.menu.item'
++  | 'sidebar.workspaces.workspace.menu.item'
+   | 'sidebar.workspaces.session.row.action'
+   | 'sidebar.session.row.leading'
+   | 'sidebar.session.row.hover'
+@@ -216,8 +217,12 @@ function rowHalf(e: { clientY: number; currentTarget: HTMLElement }): 'before' |
+  * @param props.t - the browser root's locale seat.
+  * @returns the row element.
+  */
+-export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, newShortcut, t }: {
++export function ProjectRowItem({
++  group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, newShortcut, renderSlot, t,
++}: {
+   group: GroupNode
++  /** Renders plugin rows of the Workspace menu; absent renders the shipped rows only. */
++  renderSlot?: RowRenderSlots | undefined
+   newShortcut?: ShortcutCatalogEntry | undefined
+   containsCurrentDescendant?: boolean
+   onToggle: () => void
+@@ -235,6 +240,7 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
+   const label = row.workspaceId === undefined ? t('group.ungrouped') : row.label
+   const active = containsCurrentDescendant || (group.expanded && group.containsCurrent)
+   const [menuOpen, setMenuOpen] = useState(false)
++  const menuOpenState = useMemo((): MenuOpenState => [menuOpen, setMenuOpen], [menuOpen])
+   const workspaceMenuItems = [
+     { id: 'rename', label: t('rename'), icon: <IconEditOutlineRegular /> },
+     { id: 'delete', label: t('delete.workspace'), icon: <IconTrashOutlineRegular />, danger: true },
+@@ -292,7 +298,13 @@ export function ProjectRowItem({ group, containsCurrentDescendant = false, onTog
+                 <IconEllipsisOutlineRegular />
+               </button>
+             )}
+-          />
++          >
++            {row.workspaceId !== undefined && renderSlot?.(
++              'sidebar.workspaces.workspace.menu.item',
++              { workspaceId: row.workspaceId, path: row.cwd, title: label },
++              { hookContext: menuOpenState },
++            )}
++          </Menu>
+         )}
+         <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500}>
+           <button
+diff --git a/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx b/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx
+index 3c900b2c6b..a657c94f10 100644
+--- a/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx
++++ b/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx
+@@ -494,6 +494,7 @@ function SessionTree({
+           }}
+       >
+         <ProjectRowItem
++          renderSlot={renderSlot}
+           newShortcut={shortcuts.find(row => row.id === 'session.new')}
+           group={group}
+           containsCurrentDescendant={currentAncestors.has(group.key)}
+diff --git a/packages/client/ui-workspace/tests/rows.client.spec.tsx b/packages/client/ui-workspace/tests/rows.client.spec.tsx
+index 6a32265a17..8b7b4cdc90 100644
+--- a/packages/client/ui-workspace/tests/rows.client.spec.tsx
++++ b/packages/client/ui-workspace/tests/rows.client.spec.tsx
+@@ -457,6 +457,27 @@ describe('workspace browser rows', () => {
+     expect(screen.queryByRole('menu')).toBeNull()
+   })
+ 
++  it('workspace row menu renders plugin rows after the shipped ones, with the row identity and open state', () => {
++    const group: GroupNode = {
++      key: 'project', workspaceId: wid('project'), cwd: '/projects/project', createdAt: 0, label: 'Project',
++      sessionCount: 0, expanded: false, containsCurrent: false, sessions: [],
++    }
++    const seen: unknown[] = []
++    const renderSlot = ((name: string, owner: unknown, options?: { hookContext?: readonly [boolean, (open: boolean) => void] }) => {
++      if (name !== 'sidebar.workspaces.workspace.menu.item') return null
++      seen.push(owner)
++      const close = options?.hookContext?.[1]
++      return <button type="button" role="menuitem" onClick={() => { close?.(false) }}>复制为工作区</button>
++    }) as never
++    render(<ProjectRowItem group={group} onToggle={vi.fn()} onCreate={vi.fn()} actions={{ rename: vi.fn(), delete: vi.fn() }}
++      renderSlot={renderSlot} t={t} />)
++    fireEvent.click(screen.getByRole('button', { name: '工作区“Project”的操作' }))
++    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['重命名', '删除工作区', '复制为工作区'])
++    expect(seen.at(-1)).toEqual({ workspaceId: 'project', path: '/projects/project', title: 'Project' })
++    fireEvent.click(screen.getByRole('menuitem', { name: '复制为工作区' }))
++    expect(screen.queryByRole('menu')).toBeNull()
++  })
++
+   it('workspace hover card shows its details and copies the full directory path', async () => {
+     vi.useFakeTimers()
+     const writeText = vi.fn(async () => {})
+diff --git a/packages/extensions/cordis-client-runner/src/client/slot-catalog.ts b/packages/extensions/cordis-client-runner/src/client/slot-catalog.ts
+index 7a15a2f5ef..acd0d0f177 100644
+--- a/packages/extensions/cordis-client-runner/src/client/slot-catalog.ts
++++ b/packages/extensions/cordis-client-runner/src/client/slot-catalog.ts
+@@ -699,7 +699,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     ],
+     replaceRisk: 'shadows-shipped-ui',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'conversation.hero.workspace.directoryFlow\', () => ctx.slots.register(\n      { name: \'conversation.hero.workspace.directoryFlow\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+-    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:117',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:131',
+   },
+   {
+     key: 'conversation.input.activity',
+@@ -2913,7 +2913,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     slotInject: '',
+     declaredBy: 'an entry in \'sidebar\' (client-ui-sidebar), so it exists while that entry is mounted',
+     occupants: [
+-      'client-ui-brand-official OfficialBrandMark',
++      'client-ui-brand-official rebranded ? ProductBrandMark : OfficialBrandMark',
+     ],
+     replaceRisk: 'shadows-shipped-ui',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.brand.mark\', () => ctx.slots.register(\n      { name: \'sidebar.brand.mark\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+@@ -2944,7 +2944,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     slotInject: '',
+     declaredBy: 'an entry in \'sidebar\' (client-ui-sidebar), so it exists while that entry is mounted',
+     occupants: [
+-      'client-ui-brand-official OfficialBrandName',
++      'client-ui-brand-official rebranded ? ProductBrandName : OfficialBrandName',
+     ],
+     replaceRisk: 'shadows-shipped-ui',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.brand.name\', () => ctx.slots.register(\n      { name: \'sidebar.brand.name\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+@@ -3705,7 +3705,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     ],
+     replaceRisk: 'none',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.session.row.hover\', () => ctx.slots.register(\n      { name: \'sidebar.session.row.hover\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+-    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:134',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:148',
+   },
+   {
+     key: 'sidebar.session.row.leading',
+@@ -3757,7 +3757,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     ],
+     replaceRisk: 'none',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.session.row.leading\', () => ctx.slots.register(\n      { name: \'sidebar.session.row.leading\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+-    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:129',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:143',
+   },
+   {
+     key: 'sidebar.settings',
+@@ -3880,7 +3880,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     ],
+     replaceRisk: 'shadows-shipped-ui',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.workspaces.directoryFlow\', () => ctx.slots.register(\n      { name: \'sidebar.workspaces.directoryFlow\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+-    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:119',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:133',
+   },
+   {
+     key: 'sidebar.workspaces.session.menu.item',
+@@ -3935,7 +3935,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     ],
+     replaceRisk: 'none',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    const copyLabel = \'Copy Session ID\' // Localize in the contributing package.\n    ctx.slots.inject(\'sidebar.workspaces.session.menu.item\', () => ctx.slots.register(\n      { name: \'sidebar.workspaces.session.menu.item\', id: \'copy-session-id\', order: 500 },\n      ({ sessionId, useMenuOpenState }) => {\n        const [, setMenuOpen] = useMenuOpenState()\n        return React.createElement(\n          \'button\',\n          { type: \'button\', role: \'menuitem\', onClick: () => { setMenuOpen(false); void navigator.clipboard.writeText(sessionId) } },\n          copyLabel,\n        )\n      },\n    ))\n  },\n}',
+-    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:166',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:180',
+   },
+   {
+     key: 'sidebar.workspaces.session.row.action',
+@@ -3988,7 +3988,57 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
+     ],
+     replaceRisk: 'none',
+     example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.workspaces.session.row.action\', () => ctx.slots.register(\n      { name: \'sidebar.workspaces.session.row.action\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
+-    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:184',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:212',
++  },
++  {
++    key: 'sidebar.workspaces.workspace.menu.item',
++    kind: 'list',
++    scope: 'root',
++    summary: 'Rows a plugin adds to one Workspace\'s "..." menu, after the shipped rename and delete rows, in ascending `order`.',
++    doc: 'Rows a plugin adds to one Workspace\'s "..." menu, after the shipped\nrename and delete rows, in ascending `order`. Each entry renders one\n`role="menuitem"` `<button>` (ui-primitives\' `MenuItemButton` matches\nthe host styling), decides its own visibility, and dismisses the menu\nthrough the injected `useMenuOpenState` hook after acting.',
++    registerOptions: [
++      {
++        name: 'id',
++        requirement: 'required',
++        type: 'string',
++        doc: 'Your cell key. Use an id of your own: a fresh id is added beside the shipped entries, while reusing a shipped id puts you in THAT cell and replaces it. Owners that filter by id address you by it.',
++      },
++      {
++        name: 'order',
++        requirement: 'optional',
++        type: 'number',
++        doc: 'Position among the entries, ascending (default 0).',
++      },
++      {
++        name: 'label',
++        requirement: 'optional',
++        type: 'string | (() => string)',
++        doc: 'Display text where the owner projects one (nav rows, tabs). A thunk is re-read on every projection, so localized text follows the active locale without re-registering.',
++      },
++    ],
++    ownerProps: [
++      '/** Owner share of one Workspace row\'s "..." menu entries. */\nexport interface WorkspaceRowOwnerProps {\n  /** Workspace the row shows. */\n  workspaceId: WorkspaceId\n  /** The Workspace\'s directory, as the browser lists it. */\n  path: string | undefined\n  /** Row display title. */\n  title: string\n}',
++    ],
++    ownerPropsReferences: [
++      'Workspace',
++    ],
++    standardProps: [
++      'useResource: UseResource',
++      'useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>',
++      'usePanelInfo: UsePanelInfo',
++      'useSessions: UseSessions',
++      'useSessionStatus: UseSessionStatus',
++      'useSessionRetainInfo: UseSessionRetainInfo',
++      'useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>',
++    ],
++    keyDomain: '',
++    hookContext: 'MenuOpenState',
++    slotInject: '{ hooks: { menuOpenState: SlotHookFactory<\'sidebar.workspaces.workspace.menu.item\', UseMenuOpenState> } }',
++    declaredBy: 'an entry in \'sidebar.workspaces\' (client-ui-workspace), so it exists while that entry is mounted',
++    occupants: [],
++    replaceRisk: 'none',
++    example: 'return {\n  inject: [\'slots\'],\n  apply(ctx) {\n    ctx.slots.inject(\'sidebar.workspaces.workspace.menu.item\', () => ctx.slots.register(\n      { name: \'sidebar.workspaces.workspace.menu.item\', id: \'my-entry\', order: 100, label: \'My entry\' },\n      () => React.createElement(\'div\', null, \'hello\'),\n    ))\n  },\n}',
++    source: 'packages/client/ui-workspace/src/client/contract/slots.ts:197',
+   },
+   {
+     key: 'tool.call.images',

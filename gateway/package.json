@@ -1,0 +1,33 @@
+{
+  "name": "@agent-work/gateway",
+  "description": "The company service: GitHub sign-in, device tokens, model gateway and config for GL Work, and what its web console (admin/) runs on",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "test": "node --test 'test/**/*.test.ts'",
+    "typecheck": "tsc -p .",
+    "dev": "node --env-file-if-exists=.env scripts/dev.ts",
+    "start:local": "AGENT_WORK_ENV_FILE=.env node src/main.ts",
+    "admin:local": "AGENT_WORK_ENV_FILE=.env node src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.0",
+    "typescript": "^7.0.2"
+  },
+  "exports": {
+    "./runtime": "./src/runtime.ts",
+    "./dev-runtime": "./src/dev-runtime.ts",
+    "./config": "./src/config.ts",
+    "./services": "./src/services.ts",
+    "./db": "./src/db.ts",
+    "./errors": "./src/errors.ts",
+    "./vendors": "./src/vendors.ts",
+    "./server": "./src/server.ts"
+  }
+}

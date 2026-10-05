@@ -1,0 +1,54 @@
+{
+  "name": "@agent-work/dsh-tunnel",
+  "description": "内网穿透：把本机网页服务发布到公网，或让同事经 GL Work 连到你电脑的 SSH（frp）；手机远程：用 GL Work iOS 远程使用这台电脑",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "index.js",
+    "frpc.js",
+    "remote.js",
+    "client.js",
+    "cordis.patch.yml",
+    "bin",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "license": "UNLICENSED",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "node --test test/frpc.test.mjs test/remote.test.mjs",
+    "fetch-frpc": "node ../../scripts/fetch-frpc.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.4",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^24",
+    "typescript": "^7.0.2",
+    "@types/ws": "^8.18.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  }
+}

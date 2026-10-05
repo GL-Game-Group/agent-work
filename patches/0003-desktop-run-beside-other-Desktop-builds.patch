@@ -1,0 +1,473 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: wuming <eva2show@gmail.com>
+Date: Fri, 2 Oct 2026 03:16:09 +0800
+Subject: [PATCH 03/11] desktop: run beside other Desktop builds
+
+DSH_DESKTOP_DEFAULT_HOME and DSH_DESKTOP_HOST_PORT in the platform dotenv file are recorded in the application manifest. The packaged main process applies them before any module resolves DSH_HOME or spawns the Host, unless the person running the app set DSH_HOME or DSH_DESKTOP_HOST_PORT. The macOS dsh CLI launcher reads the same home from Info.plist.
+
+A configured DSH_DESKTOP_PRODUCT_NAME also names the Electron userData directory, set before the single-instance claim. Without it every build used ~/Library/Application Support/@deepseek-ai/dsh-desktop, so a second differently named Desktop found the first one's lock and exited.
+
+diff --git a/apps/desktop-host/src/host-port.ts b/apps/desktop-host/src/host-port.ts
+new file mode 100644
+index 0000000000..67a40e06ca
+--- /dev/null
++++ b/apps/desktop-host/src/host-port.ts
+@@ -0,0 +1,21 @@
++/** Listen port selection for the Desktop Host's Web application. */
++
++/** Port used when neither the packaged build nor the person running it chooses one. */
++const DEFAULT_DESKTOP_HOST_PORT = 19387
++
++/**
++ * Resolve the Host listen port from `DSH_DESKTOP_HOST_PORT`, which the Desktop
++ * main process sets from the packaged build's default unless the person
++ * running it already chose a value.
++ * @param env - Host process environment.
++ * @returns the port as the `--port` argument value.
++ * @throws when the variable is set to anything other than an integer from 1024 to 65535.
++ */
++export function resolveDesktopHostPort(env: NodeJS.ProcessEnv): string {
++  const configured = env.DSH_DESKTOP_HOST_PORT?.trim() ?? ''
++  if (configured === '') return String(DEFAULT_DESKTOP_HOST_PORT)
++  if (!/^[1-9][0-9]*$/u.test(configured) || Number(configured) < 1024 || Number(configured) > 65535) {
++    throw new Error('dsh desktop host: DSH_DESKTOP_HOST_PORT must be an integer from 1024 to 65535')
++  }
++  return configured
++}
+diff --git a/apps/desktop-host/src/index.ts b/apps/desktop-host/src/index.ts
+index 4a47a92ce8..b4e67a9c48 100644
+--- a/apps/desktop-host/src/index.ts
++++ b/apps/desktop-host/src/index.ts
+@@ -9,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
+ import type {} from '@deepseek-ai/dsh-deepseek-account'
+ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+ import * as desktopOffice from './office.ts'
++import { resolveDesktopHostPort } from './host-port.ts'
+ 
+ import { installDesktopUpdateTaskControl } from './update-tasks.ts'
+ import { installDesktopQuitInspection } from './quit-inspection.ts'
+@@ -27,7 +28,7 @@ async function main(): Promise<void> {
+     profile: 'desktop',
+     resolvedProfile: { profile, installAnchor },
+     patchFiles: [],
+-    args: ['--no-open', '--port', '19387'],
++    args: ['--no-open', '--port', resolveDesktopHostPort(process.env)],
+     ...(process.argv[5] === undefined ? {} : {
+       packageManager: {
+         command: process.execPath,
+diff --git a/apps/desktop-host/tests/host-port.spec.ts b/apps/desktop-host/tests/host-port.spec.ts
+new file mode 100644
+index 0000000000..60ca0d32dd
+--- /dev/null
++++ b/apps/desktop-host/tests/host-port.spec.ts
+@@ -0,0 +1,19 @@
++import { describe, expect, it } from 'vitest'
++import { resolveDesktopHostPort } from '../src/host-port.ts'
++
++describe('resolveDesktopHostPort', () => {
++  it('uses 19387 when DSH_DESKTOP_HOST_PORT is unset or blank', () => {
++    expect(resolveDesktopHostPort({})).toBe('19387')
++    expect(resolveDesktopHostPort({ DSH_DESKTOP_HOST_PORT: ' ' })).toBe('19387')
++  })
++
++  it('uses a configured port', () => {
++    expect(resolveDesktopHostPort({ DSH_DESKTOP_HOST_PORT: '19487' })).toBe('19487')
++  })
++
++  it('rejects ports outside 1024 to 65535 and non-integers', () => {
++    for (const value of ['80', '65536', '19487.5', 'abc', '019487']) {
++      expect(() => resolveDesktopHostPort({ DSH_DESKTOP_HOST_PORT: value })).toThrow(/DSH_DESKTOP_HOST_PORT/u)
++    }
++  })
++})
+diff --git a/apps/desktop/README.md b/apps/desktop/README.md
+index fa00c27e08..eec6bfd2ec 100644
+--- a/apps/desktop/README.md
++++ b/apps/desktop/README.md
+@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
+ 
+ Desktop analytics follows the [product collection policy](../../packages/client/product-analytics/README.md), including its live application setting. Web usage is excluded. Update installation waits for its local analytics intake before locking API admission and stopping the Host. Intake has a one-second deadline; failure does not prevent installation, and collector delivery is not awaited.
+ 
+-The desktop application is an Electron shell around the complete dsh Web application. An Electron RunAsNode child starts the shared profile runner, and Electron immediately loads the packaged Web entry at `dsh-app://app/`. Its shared loading page waits for Host boot injections, then starts the client without navigating to another document. Electron forwards application HTTP requests to the authenticated Web Host, dropping connection-level response headers (`transfer-encoding`, `connection`, `keep-alive`) that describe the Node fetch rather than the resource, and marking plugin bundle responses `no-store` because their per-launch revisions would only accumulate in Chromium's disk cache; WebSocket streams connect to that Host with credentials attached only for the owned application window. Node IPC carries boot injections, readiness, and shutdown. Desktop defaults to port `19387`, separate from Web’s `3080`; a `webserver.config.port` patch can override it.
++The desktop application is an Electron shell around the complete dsh Web application. An Electron RunAsNode child starts the shared profile runner, and Electron immediately loads the packaged Web entry at `dsh-app://app/`. Its shared loading page waits for Host boot injections, then starts the client without navigating to another document. Electron forwards application HTTP requests to the authenticated Web Host, dropping connection-level response headers (`transfer-encoding`, `connection`, `keep-alive`) that describe the Node fetch rather than the resource, and marking plugin bundle responses `no-store` because their per-launch revisions would only accumulate in Chromium's disk cache; WebSocket streams connect to that Host with credentials attached only for the owned application window. Node IPC carries boot injections, readiness, and shutdown. Desktop defaults to port `19387`, separate from Web’s `3080`; a `webserver.config.port` patch can override it. A build packaged with `DSH_DESKTOP_HOST_PORT` or `DSH_DESKTOP_DEFAULT_HOME` in its platform dotenv file applies that port or Harness home when the person running it has not set `DSH_DESKTOP_HOST_PORT` or `DSH_HOME`; the bundled macOS `dsh` command applies the same home. A build packaged with `DSH_DESKTOP_PRODUCT_NAME` keeps Electron userData, including the single-instance lock, under that name in the platform application-data directory.
+ 
+ The first application-menu command, **About DeepSeek Harness**, opens Electron's native About panel with the application icon, product name, and installed release version. The menu follows the Desktop shell locale. On macOS, Hide, Hide Others, Show All, and Quit use localized labels; Hide and Quit include the DeepSeek Harness product name. These commands retain their native actions and shortcuts. macOS reads the icon from its application bundle, so an unpackaged development launch displays Electron's icon; Windows receives the packaged PNG.
+ 
+diff --git a/apps/desktop/README.zh.md b/apps/desktop/README.zh.md
+index 61caaf038d..2f87c0e3ce 100644
+--- a/apps/desktop/README.zh.md
++++ b/apps/desktop/README.zh.md
+@@ -4,7 +4,7 @@
+ 
+ 桌面埋点遵循[产品采集策略](../../packages/client/product-analytics/README.zh.md)及其动态应用配置，不包含 Web 使用情况。安装更新会等待该操作的本地埋点接收请求结束，再锁定 API 准入并停止 Host。接收请求的时限为一秒，失败不会阻止安装，也不等待收集端完成发送。
+ 
+-桌面应用是完整 dsh Web 应用外的一层 Electron 壳。Electron RunAsNode 子进程启动共享 profile runner，Electron 立即从 `dsh-app://app/` 加载打包内的 Web 入口。共享加载页等待 Host 启动注入，然后在同一文档中启动客户端。Electron 将应用 HTTP 请求转发给已认证的 Web Host，转发时丢弃描述 Node fetch 连接而非资源本身的响应头（`transfer-encoding`、`connection`、`keep-alive`），并把插件 bundle 响应标记为 `no-store`，因为其每次启动都变化的 revision 只会在 Chromium 磁盘缓存中累积；WebSocket 流连接到该 Host，仅为归属的应用窗口附加凭据。Node IPC 承载启动注入、就绪与关闭。Desktop 默认使用端口 `19387`，与 Web 的 `3080` 分开；可通过 `webserver.config.port` patch 覆盖。
++桌面应用是完整 dsh Web 应用外的一层 Electron 壳。Electron RunAsNode 子进程启动共享 profile runner，Electron 立即从 `dsh-app://app/` 加载打包内的 Web 入口。共享加载页等待 Host 启动注入，然后在同一文档中启动客户端。Electron 将应用 HTTP 请求转发给已认证的 Web Host，转发时丢弃描述 Node fetch 连接而非资源本身的响应头（`transfer-encoding`、`connection`、`keep-alive`），并把插件 bundle 响应标记为 `no-store`，因为其每次启动都变化的 revision 只会在 Chromium 磁盘缓存中累积；WebSocket 流连接到该 Host，仅为归属的应用窗口附加凭据。Node IPC 承载启动注入、就绪与关闭。Desktop 默认使用端口 `19387`，与 Web 的 `3080` 分开；可通过 `webserver.config.port` patch 覆盖。平台 dotenv 文件中配置了 `DSH_DESKTOP_HOST_PORT` 或 `DSH_DESKTOP_DEFAULT_HOME` 的打包版本，在运行者未设置 `DSH_DESKTOP_HOST_PORT` 或 `DSH_HOME` 时使用该端口或 Harness home；随包的 macOS `dsh` 命令使用同一 home。配置了 `DSH_DESKTOP_PRODUCT_NAME` 的打包版本把 Electron userData（含单实例锁）放在平台应用数据目录下以该名称命名的目录中。
+ 
+ 应用菜单第一项“**关于 DeepSeek Harness**”打开 Electron 原生关于面板，展示应用图标、产品名称和当前安装的发布版本。菜单文案跟随桌面壳的语言。macOS 的隐藏、隐藏其他、显示全部和退出条目使用本地化文案，隐藏和退出条目包含 DeepSeek Harness 产品名称。这些条目保留原生动作和快捷键。macOS 从应用包读取图标，因此未打包的开发启动会显示 Electron 图标；Windows 使用随包分发的 PNG。
+ 
+diff --git a/apps/desktop/cli/dsh b/apps/desktop/cli/dsh
+index cf1bf0405d..bc10da118b 100644
+--- a/apps/desktop/cli/dsh
++++ b/apps/desktop/cli/dsh
+@@ -12,4 +12,11 @@ while [ -L "$launcher" ]; do
+ done
+ resources=$(CDPATH= cd -- "$(dirname -- "$launcher")/../../.." && pwd -P)
+ executable=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$resources/../Info.plist")
++if [ -z "${DSH_HOME:-}" ] && default_home=$(/usr/libexec/PlistBuddy -c "Print :DSHDesktopDefaultHome" "$resources/../Info.plist" 2>/dev/null); then
++  case "$default_home" in
++    "~/"*) default_home=$HOME/${default_home#"~/"} ;;
++  esac
++  DSH_HOME=$default_home
++  export DSH_HOME
++fi
+ ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/$executable" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
+diff --git a/apps/desktop/electron-builder.config.d.mts b/apps/desktop/electron-builder.config.d.mts
+index b1989364f0..613245ed4d 100644
+--- a/apps/desktop/electron-builder.config.d.mts
++++ b/apps/desktop/electron-builder.config.d.mts
+@@ -4,7 +4,9 @@ import type { AfterPackContext, BeforePackContext } from 'app-builder-lib'
+ export interface DesktopElectronBuilderConfig {
+   readonly appId: string
+   readonly artifactName: string
+-  readonly protocols: readonly [{ readonly name: 'DeepSeek Harness'; readonly schemes: readonly ['dsh'] }]
++  /** Installed application name; `DeepSeek Harness` unless `DSH_DESKTOP_PRODUCT_NAME` is set. */
++  readonly productName: string
++  readonly protocols: readonly [{ readonly name: string; readonly schemes: readonly ['dsh'] }]
+   readonly directories: {
+     readonly output: string
+   }
+@@ -16,7 +18,15 @@ export interface DesktopElectronBuilderConfig {
+     { readonly from: string, readonly to: 'dsh', readonly filter: readonly ['**/*'] },
+     { readonly from: string, readonly to: 'dsh/node_modules', readonly filter: readonly ['**/*'] },
+   ]
+-  readonly extraMetadata: { readonly dshDesktopAppId: string }
++  readonly extraMetadata: {
++    readonly dshDesktopAppId: string
++    /** Harness home the main process applies when `DSH_HOME` is unset. */
++    readonly dshDesktopDefaultHome?: string
++    /** Host listen port the main process applies when `DSH_DESKTOP_HOST_PORT` is unset. */
++    readonly dshDesktopHostPort?: number
++    /** Electron userData directory name under the platform application-data directory. */
++    readonly dshDesktopUserDataName?: string
++  }
+   readonly asarUnpack: readonly string[]
+   readonly extraResources: readonly [
+     { readonly from: string, readonly to: 'runtime' },
+@@ -24,7 +34,12 @@ export interface DesktopElectronBuilderConfig {
+     ...{ readonly from: string, readonly to: 'tray.ico' }[],
+   ]
+   readonly mac: {
+-    readonly extendInfo: { readonly CFBundleLocalizations: readonly string[], readonly NSMicrophoneUsageDescription: string }
++    readonly extendInfo: {
++      readonly CFBundleLocalizations: readonly string[]
++      readonly NSMicrophoneUsageDescription: string
++      /** Harness home the bundled dsh CLI launcher uses when `DSH_HOME` is unset. */
++      readonly DSHDesktopDefaultHome?: string
++    }
+     readonly entitlements: string
+     readonly entitlementsInherit: string
+     readonly identity: string | undefined
+diff --git a/apps/desktop/scripts/desktop-package-environment.mjs b/apps/desktop/scripts/desktop-package-environment.mjs
+index 6145fda3b1..456c524c4a 100644
+--- a/apps/desktop/scripts/desktop-package-environment.mjs
++++ b/apps/desktop/scripts/desktop-package-environment.mjs
+@@ -13,10 +13,10 @@ import { resolveWindowsSignatureCacheDirectory } from './windows-signature-cache
+ import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
+ 
+ const APP_ROOT = fileURLToPath(new URL('..', import.meta.url))
+-const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
++const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|DEFAULT_HOME|HOST_PORT|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
+ const WINDOWS_SETTING = /^DSH_DESKTOP_WINDOWS_(?:CER_FILE|SIGNTOOL|KEY_CONTAINER|TOKEN_PIN|SIGNATURE_CACHE_DIR|SIGNATURE_CACHE_CONCURRENCY)$/u
+ const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|PACK_CONCURRENCY|DOWNLOAD_PROXY|NOTARIZATION_PROXY)|APPLE_(?:API_KEY|API_KEY_ID|API_ISSUER|ID|APP_SPECIFIC_PASSWORD|TEAM_ID|KEYCHAIN|KEYCHAIN_PROFILE)|CSC_(?:LINK|KEY_PASSWORD))$/u
+-const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
++const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|PRODUCT_NAME|DEFAULT_HOME|HOST_PORT|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
+ const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGNTOOL', 'APPLE_API_KEY', 'APPLE_KEYCHAIN', 'CSC_LINK']
+ 
+ /**
+diff --git a/apps/desktop/scripts/desktop-release-environment.d.mts b/apps/desktop/scripts/desktop-release-environment.d.mts
+index acb67360dd..7128acb5e1 100644
+--- a/apps/desktop/scripts/desktop-release-environment.d.mts
++++ b/apps/desktop/scripts/desktop-release-environment.d.mts
+@@ -57,6 +57,18 @@ export function resolveDesktopAppId(env: NodeJS.ProcessEnv): string
+  */
+ export function resolveDesktopProductName(env: NodeJS.ProcessEnv): string
+ 
++/**
++ * Resolve the installed application's runtime defaults recorded at packaging time.
++ * The home and port apply only when the person running the application has not
++ * set `DSH_HOME` or `DSH_DESKTOP_HOST_PORT`.
++ * A configured `DSH_DESKTOP_PRODUCT_NAME` also names the Electron userData
++ * directory, which holds the single-instance lock, so differently named builds
++ * run side by side; without it the directory keeps Electron's default name.
++ * @param env - Packaging environment.
++ * @returns Harness home (absolute or `~/`-relative), Host listen port, and userData directory name; each omitted when unset.
++ */
++export function resolveDesktopRuntimeDefaults(env: NodeJS.ProcessEnv): { defaultHome?: string, hostPort?: number, userDataName?: string }
++
+ /**
+  * Resolve the npm registry used to materialize the bundled runtime and its external dependencies.
+  * @param env - Packaging environment.
+diff --git a/apps/desktop/scripts/desktop-release-environment.mjs b/apps/desktop/scripts/desktop-release-environment.mjs
+index d9efaee12f..0b8a3a329c 100644
+--- a/apps/desktop/scripts/desktop-release-environment.mjs
++++ b/apps/desktop/scripts/desktop-release-environment.mjs
+@@ -65,6 +65,42 @@ export function resolveDesktopProductName(env) {
+   return env.DSH_DESKTOP_PRODUCT_NAME || 'DeepSeek Harness'
+ }
+ 
++/**
++ * Resolve the installed application's runtime defaults recorded at packaging time.
++ * The home and port apply only when the person running the application has not
++ * set `DSH_HOME` or `DSH_DESKTOP_HOST_PORT`.
++ * A configured `DSH_DESKTOP_PRODUCT_NAME` also names the Electron userData
++ * directory, which holds the single-instance lock, so differently named builds
++ * run side by side; without it the directory keeps Electron's default name.
++ * @param {NodeJS.ProcessEnv} env - Packaging environment.
++ * @returns {{ defaultHome?: string, hostPort?: number, userDataName?: string }} Harness home (absolute or `~/`-relative), Host listen port, and userData directory name; each omitted when unset.
++ */
++export function resolveDesktopRuntimeDefaults(env) {
++  const defaults = {}
++  const productName = env.DSH_DESKTOP_PRODUCT_NAME
++  if (productName !== undefined && productName !== '') {
++    if (/[/\\:]/u.test(productName) || productName.trim() !== productName || productName.startsWith('.')) {
++      throw new Error('desktop release environment: DSH_DESKTOP_PRODUCT_NAME must be usable as a directory name')
++    }
++    defaults.userDataName = productName
++  }
++  const home = env.DSH_DESKTOP_DEFAULT_HOME
++  if (home !== undefined && home !== '') {
++    if (!home.startsWith('/') && !home.startsWith('~/')) {
++      throw new Error('desktop release environment: DSH_DESKTOP_DEFAULT_HOME must be an absolute path or start with ~/')
++    }
++    defaults.defaultHome = home
++  }
++  const port = env.DSH_DESKTOP_HOST_PORT
++  if (port !== undefined && port !== '') {
++    if (!/^[1-9][0-9]*$/u.test(port) || Number(port) < 1024 || Number(port) > 65535) {
++      throw new Error('desktop release environment: DSH_DESKTOP_HOST_PORT must be an integer from 1024 to 65535')
++    }
++    defaults.hostPort = Number(port)
++  }
++  return defaults
++}
++
+ /**
+  * Resolve and validate the application identifier shared by every platform target.
+  * @param {NodeJS.ProcessEnv} env - Packaging environment.
+diff --git a/apps/desktop/scripts/electron-builder-config.mjs b/apps/desktop/scripts/electron-builder-config.mjs
+index fbb1c0a0f9..8875267fd3 100644
+--- a/apps/desktop/scripts/electron-builder-config.mjs
++++ b/apps/desktop/scripts/electron-builder-config.mjs
+@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
+ import {
+   resolveDesktopAppId,
+   resolveDesktopProductName,
++  resolveDesktopRuntimeDefaults,
+   resolveMacOSNotarizationEnvironment,
+   resolveMacOSSigningEnvironment,
+ } from './desktop-release-environment.mjs'
+@@ -53,6 +54,7 @@ export function createElectronBuilderConfig(
+ ) {
+   const appId = resolveDesktopAppId(env)
+   const productName = resolveDesktopProductName(env)
++  const runtimeDefaults = resolveDesktopRuntimeDefaults(env)
+   const policy = resolveDesktopPolicyEnvironment(env)
+   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
+   const resolvedPlatform = targetPlatform ?? hostPlatform
+@@ -104,6 +106,9 @@ export function createElectronBuilderConfig(
+     protocols: [{ name: productName, schemes: ['dsh'] }],
+     extraMetadata: {
+       dshDesktopAppId: appId,
++      ...runtimeDefaults.defaultHome === undefined ? {} : { dshDesktopDefaultHome: runtimeDefaults.defaultHome },
++      ...runtimeDefaults.hostPort === undefined ? {} : { dshDesktopHostPort: runtimeDefaults.hostPort },
++      ...runtimeDefaults.userDataName === undefined ? {} : { dshDesktopUserDataName: runtimeDefaults.userDataName },
+       dshMandatoryUpdatePolicy: policy,
+       ...buildVersion === productVersion ? {} : { version: buildVersion },
+       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
+@@ -156,6 +161,8 @@ export function createElectronBuilderConfig(
+         // macOS matches the application locale against this bundle, not Electron Framework resources.
+         CFBundleLocalizations: ['en', 'zh_CN'],
+         NSMicrophoneUsageDescription: `${productName} uses your microphone to transcribe speech into message drafts.`,
++        // The bundled dsh CLI launcher reads this before the shell environment reaches the Host.
++        ...runtimeDefaults.defaultHome === undefined ? {} : { DSHDesktopDefaultHome: runtimeDefaults.defaultHome },
+       },
+       identity: macOSSigning?.signingIdentity,
+       forceCodeSigning: true,
+diff --git a/apps/desktop/src/main.ts b/apps/desktop/src/main.ts
+index b4b8153b7f..ce7bd03b49 100644
+--- a/apps/desktop/src/main.ts
++++ b/apps/desktop/src/main.ts
+@@ -1,4 +1,6 @@
+ import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-product-analytics/types'
++// Must stay the first value import: it sets DSH_HOME and the Host port before other modules read them.
++import './packaged-runtime-defaults.ts'
+ import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
+ /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
+ 
+diff --git a/apps/desktop/src/packaged-runtime-defaults.ts b/apps/desktop/src/packaged-runtime-defaults.ts
+new file mode 100644
+index 0000000000..318aabd7dc
+--- /dev/null
++++ b/apps/desktop/src/packaged-runtime-defaults.ts
+@@ -0,0 +1,19 @@
++/**
++ * Apply a packaged build's runtime defaults before any other main-process module
++ * resolves the Harness home, claims the single-instance lock, or spawns the Host.
++ * `main.ts` imports this module first; development launches keep their
++ * launcher-owned environment and `--user-data-dir`.
++ */
++
++import { readFileSync } from 'node:fs'
++import { join } from 'node:path'
++import { app } from 'electron'
++import { applyDesktopRuntimeDefaults, desktopUserDataName } from './runtime-defaults.ts'
++
++if (app.isPackaged) {
++  const manifest: unknown = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8'))
++  applyDesktopRuntimeDefaults(manifest, process.env)
++  // Must precede the single-instance claim, which locks the userData directory.
++  const userDataName = desktopUserDataName(manifest)
++  if (userDataName !== undefined) app.setPath('userData', join(app.getPath('appData'), userDataName))
++}
+diff --git a/apps/desktop/src/runtime-defaults.ts b/apps/desktop/src/runtime-defaults.ts
+new file mode 100644
+index 0000000000..8a97e97f2a
+--- /dev/null
++++ b/apps/desktop/src/runtime-defaults.ts
+@@ -0,0 +1,48 @@
++/** Runtime defaults that a packaged Desktop build records in its application manifest. */
++
++import { expandHomePath } from '@deepseek-ai/dsh-home-paths'
++
++/**
++ * Read the manifest's `dshDesktopUserDataName`, the directory under the
++ * platform application-data directory that holds Electron userData and the
++ * single-instance lock.
++ * @param manifest - Parsed packaged application manifest.
++ * @returns the directory name, or undefined when the build keeps Electron's default.
++ * @throws when the field is present but not a single path segment.
++ */
++export function desktopUserDataName(manifest: unknown): string | undefined {
++  if (typeof manifest !== 'object' || manifest === null) throw new Error('desktop runtime defaults: invalid application manifest')
++  if (!('dshDesktopUserDataName' in manifest)) return undefined
++  const name = manifest.dshDesktopUserDataName
++  if (typeof name !== 'string' || name === '' || /[/\\:]/u.test(name) || name.trim() !== name || name.startsWith('.')) {
++    throw new Error('desktop runtime defaults: dshDesktopUserDataName must be a single directory name')
++  }
++  return name
++}
++
++/**
++ * Apply the manifest's `dshDesktopDefaultHome` and `dshDesktopHostPort` to the
++ * environment the Desktop main process and its Host share. A value applies only
++ * when `DSH_HOME` or `DSH_DESKTOP_HOST_PORT` is unset or blank, so a person's
++ * own setting always wins. Absent manifest fields leave the environment as is.
++ * @param manifest - Parsed packaged application manifest.
++ * @param env - Environment to update in place.
++ * @throws when a present field has the wrong type or range.
++ */
++export function applyDesktopRuntimeDefaults(manifest: unknown, env: NodeJS.ProcessEnv): void {
++  if (typeof manifest !== 'object' || manifest === null) throw new Error('desktop runtime defaults: invalid application manifest')
++  if ('dshDesktopDefaultHome' in manifest) {
++    const home = manifest.dshDesktopDefaultHome
++    if (typeof home !== 'string' || (!home.startsWith('/') && !home.startsWith('~/'))) {
++      throw new Error('desktop runtime defaults: dshDesktopDefaultHome must be an absolute or ~/ path')
++    }
++    if ((env.DSH_HOME ?? '').trim() === '') env.DSH_HOME = expandHomePath(home)
++  }
++  if ('dshDesktopHostPort' in manifest) {
++    const port = manifest.dshDesktopHostPort
++    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1024 || port > 65535) {
++      throw new Error('desktop runtime defaults: dshDesktopHostPort must be an integer from 1024 to 65535')
++    }
++    if ((env.DSH_DESKTOP_HOST_PORT ?? '').trim() === '') env.DSH_DESKTOP_HOST_PORT = String(port)
++  }
++}
+diff --git a/apps/desktop/tests/macos-signature.spec.ts b/apps/desktop/tests/macos-signature.spec.ts
+index b27abf888d..bd6f91d245 100644
+--- a/apps/desktop/tests/macos-signature.spec.ts
++++ b/apps/desktop/tests/macos-signature.spec.ts
+@@ -88,6 +88,29 @@ describe('desktop macOS release signature', () => {
+     expect(typeof config.artifactBuildCompleted).toBe('function')
+   })
+ 
++  it('records packaging-time runtime defaults for the main process and the dsh CLI launcher', async () => {
++    const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
++    const configured = createElectronBuilderConfig({
++      ...RELEASE_ENVIRONMENT, DSH_DESKTOP_DEFAULT_HOME: '~/.team', DSH_DESKTOP_HOST_PORT: '19487',
++    }, 'darwin', 'arm64')
++    expect(configured.extraMetadata).toMatchObject({ dshDesktopDefaultHome: '~/.team', dshDesktopHostPort: 19487 })
++    expect(configured.mac.extendInfo.DSHDesktopDefaultHome).toBe('~/.team')
++    const plain = createElectronBuilderConfig(RELEASE_ENVIRONMENT, 'darwin', 'arm64')
++    expect(plain.extraMetadata).not.toHaveProperty('dshDesktopDefaultHome')
++    expect(plain.extraMetadata).not.toHaveProperty('dshDesktopHostPort')
++    expect(plain.mac.extendInfo).not.toHaveProperty('DSHDesktopDefaultHome')
++    expect(plain.extraMetadata).not.toHaveProperty('dshDesktopUserDataName')
++    const named = createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_PRODUCT_NAME: 'Team App' }, 'darwin', 'arm64')
++    expect(named.productName).toBe('Team App')
++    expect(named.extraMetadata).toMatchObject({ dshDesktopUserDataName: 'Team App' })
++    expect(() => createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_PRODUCT_NAME: 'Team/App' }, 'darwin', 'arm64'))
++      .toThrow(/DSH_DESKTOP_PRODUCT_NAME/u)
++    expect(() => createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_DEFAULT_HOME: 'team' }, 'darwin', 'arm64'))
++      .toThrow(/DSH_DESKTOP_DEFAULT_HOME/u)
++    expect(() => createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_HOST_PORT: '80' }, 'darwin', 'arm64'))
++      .toThrow(/DSH_DESKTOP_HOST_PORT/u)
++  })
++
+   it('seals PAK resources with their enclosing bundle while signing executable code', async () => {
+     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
+     const config = createElectronBuilderConfig(RELEASE_ENVIRONMENT, 'darwin', 'arm64')
+diff --git a/apps/desktop/tests/runtime-defaults.spec.ts b/apps/desktop/tests/runtime-defaults.spec.ts
+new file mode 100644
+index 0000000000..330d1c5477
+--- /dev/null
++++ b/apps/desktop/tests/runtime-defaults.spec.ts
+@@ -0,0 +1,47 @@
++import { homedir } from 'node:os'
++import { join } from 'node:path'
++import { describe, expect, it } from 'vitest'
++import { applyDesktopRuntimeDefaults, desktopUserDataName } from '../src/runtime-defaults.ts'
++
++describe('applyDesktopRuntimeDefaults', () => {
++  it('sets the Harness home and Host port when the person has not chosen them', () => {
++    const env: NodeJS.ProcessEnv = { DSH_HOME: '  ' }
++    applyDesktopRuntimeDefaults({ dshDesktopDefaultHome: '~/.agent-work', dshDesktopHostPort: 19487 }, env)
++    expect(env).toEqual({ DSH_HOME: join(homedir(), '.agent-work'), DSH_DESKTOP_HOST_PORT: '19487' })
++  })
++
++  it('keeps values the person already set', () => {
++    const env: NodeJS.ProcessEnv = { DSH_HOME: '/srv/dsh', DSH_DESKTOP_HOST_PORT: '20000' }
++    applyDesktopRuntimeDefaults({ dshDesktopDefaultHome: '/opt/team', dshDesktopHostPort: 19487 }, env)
++    expect(env).toEqual({ DSH_HOME: '/srv/dsh', DSH_DESKTOP_HOST_PORT: '20000' })
++  })
++
++  it('leaves the environment unchanged for a manifest without defaults', () => {
++    const env: NodeJS.ProcessEnv = {}
++    applyDesktopRuntimeDefaults({ name: '@deepseek-ai/dsh-desktop' }, env)
++    expect(env).toEqual({})
++  })
++
++  it('rejects malformed manifest fields', () => {
++    expect(() => applyDesktopRuntimeDefaults({ dshDesktopDefaultHome: 'relative/home' }, {})).toThrow(/dshDesktopDefaultHome/u)
++    expect(() => applyDesktopRuntimeDefaults({ dshDesktopHostPort: '19487' }, {})).toThrow(/dshDesktopHostPort/u)
++    expect(() => applyDesktopRuntimeDefaults({ dshDesktopHostPort: 80 }, {})).toThrow(/dshDesktopHostPort/u)
++    expect(() => applyDesktopRuntimeDefaults(null, {})).toThrow(/manifest/u)
++  })
++})
++
++describe('desktopUserDataName', () => {
++  it('returns the packaged userData directory name', () => {
++    expect(desktopUserDataName({ dshDesktopUserDataName: 'Team App' })).toBe('Team App')
++  })
++
++  it('keeps Electron\'s default when the manifest names none', () => {
++    expect(desktopUserDataName({ name: '@deepseek-ai/dsh-desktop' })).toBeUndefined()
++  })
++
++  it('rejects names that are not a single directory', () => {
++    for (const name of ['', 'a/b', 'a\\b', '..', ' Team', 42]) {
++      expect(() => desktopUserDataName({ dshDesktopUserDataName: name })).toThrow(/dshDesktopUserDataName/u)
++    }
++  })
++})

@@ -1,0 +1,69 @@
+# Team composition layer, applied after the shipped bundles and before each
+# member's own profile patch.
+#
+# - `insert` appends rows (team plugins).
+# - A row with only `id` overrides fields of an existing row; `config` replaces
+#   the row's whole config, it is not deep-merged. Overriding `name` has no
+#   effect: to swap a plugin, set `disabled: true` on its row and insert the
+#   replacement under a new id.
+# - `disabled: true` turns a shipped row off.
+
+# Members sign in to the company service with GitHub instead of a DeepSeek
+# Platform account. The company account implements the same `deepseekAccount`
+# service, so the welcome window and Settings keep working.
+- id: deepseek-account
+  disabled: true
+# Models come from the company's gateway, never from a Platform account token.
+- id: llm-deepseek-account
+  disabled: true
+- insert:
+    # A path beside this patch: the Loader keeps a bundle's own package out of
+    # its import scope, so the bundle's plugins are named by file.
+    - id: company-account
+      name: ./account.js
+      # For a local development service, override in the profile patch:
+      #   - id: company-account
+      #     config: { serverOrigin: 'http://127.0.0.1:8787', allowLoopbackHttp: true }
+      config:
+        serverOrigin: https://agent.glgwork.com
+    # Applies the company's managed config (model gateway, its key) after sign-in.
+    - id: company-config-sync
+      name: ./config-sync.js
+    # The plugins the company publishes, for the "公司插件" page. A nested package
+    # (company/package.json): a package with a client module may own only one row.
+    - id: company-plugins
+      name: ./company/index.js
+
+# The account is the company's, not a DeepSeek Platform one: no balance, usage,
+# top-up, onboarding credit step, or "add API key" alternative (patches/0005).
+#
+# First-run onboarding counts as done at install, with the team's defaults;
+# members change them in Settings, and their own choice wins.
+- id: ui-settings-account
+  config:
+    platformAccount: false
+    # The account menu's 意见反馈 becomes 公司文档, opened in the browser (patches/0009).
+    docsUrl: https://work.glwiki.com/
+    version: 1
+    step: done
+    completion: skipped
+    purpose: null
+    process: standard
+    usage: detailed
+    developerTools: false
+
+# Defaults the onboarding would otherwise set: key steps of each turn, full
+# usage figures. `config` replaces the row config, so linkOpening is restated
+# at its shipped value.
+- id: ui-chat
+  config:
+    transcriptView: standard
+    performanceUsage: detailed
+    linkOpening: sidebar
+
+# No product analytics. The row stays so the desktop's policy stream keeps its
+# source; `config` replaces the whole row config, so appVersion is restated.
+- id: product-analytics
+  config:
+    enabled: false
+    appVersion: !!js process.env.DSH_CLIENT_VERSION

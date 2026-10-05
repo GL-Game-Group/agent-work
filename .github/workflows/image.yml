@@ -1,0 +1,26 @@
+# The company service image (deploy/Dockerfile) in the company registry (Aliyun ACR):
+#   glwork-registry.cn-hongkong.cr.aliyuncs.com/glwork/agent-work:<commit SHA>
+# Deployed to the internal cluster with deploy/agent-deploy (deploy/AGENT_DEPLOY.md).
+name: image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - admin/**
+      - gateway/**
+      - deploy/Dockerfile
+      - deploy/Dockerfile.dockerignore
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - .github/workflows/image.yml
+  workflow_dispatch:
+
+jobs:
+  image:
+    uses: GL-Game-Group/.github/.github/workflows/build-image.yml@main
+    with:
+      image: agent-work
+      file: deploy/Dockerfile
+    secrets: inherit
