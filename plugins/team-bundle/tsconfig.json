@@ -10,5 +10,5 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["account.js", "config-sync.js", "company/index.js"]
+  "include": ["account.js", "config-sync.js", "company/index.js", "long-input/index.js"]
 }
