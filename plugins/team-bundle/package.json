@@ -20,7 +20,8 @@
     "config-sync.js",
     "locale/*.json",
     "cordis.patch.yml",
-    "company"
+    "company",
+    "long-input"
   ],
   "license": "UNLICENSED",
   "scripts": {

@@ -33,6 +33,10 @@
     # (company/package.json): a package with a client module may own only one row.
     - id: company-plugins
       name: ./company/index.js
+    # 文本输入: a full-size editor of the composer draft beside 会话 and 轨迹.
+    # Client only; a nested package for the same one-row rule as company-plugins.
+    - id: long-input
+      name: ./long-input/index.js
 
 # The account is the company's, not a DeepSeek Platform one: no balance, usage,
 # top-up, onboarding credit step, or "add API key" alternative (patches/0005).
