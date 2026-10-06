@@ -190,6 +190,7 @@ export function apply(ctx, config) {
         if ((await locate(cli)) === undefined) throw new Refusal('安装完成，但没有找到程序，请查看安装日志')
         job.state = 'done'
         logger.info('installed %s', cli.id)
+        void syncModels()
       } catch (error) {
         job.state = 'failed'
         job.error = error instanceof Error ? error.message : String(error)
@@ -244,7 +245,7 @@ export function apply(ctx, config) {
   }
   /** @type {Record<string, (request: Request, url: URL) => Promise<unknown>>} */
   const handlers = {
-    'GET clis': () => list(),
+    'GET clis': () => { void syncModels(); return list() },
     'POST install': async (request) => {
       const job = install(cliOf((await body(request)).id))
       return { id: job.id, state: job.state }
@@ -278,7 +279,7 @@ export function apply(ctx, config) {
 
   // 直连模式: the CLIs as models.
   const registry = /** @type {{ list(): { path: string, sessionIds: readonly string[] }[] }} */ (/** @type {unknown} */ (ctx.get('workspaceRegistry')))
-  const llm = /** @type {{ registerAdapter(providers: string[], adapter: unknown): () => void }} */ (/** @type {unknown} */ (ctx.get('llm')))
+  const llm = /** @type {{ registerAdapter(providers: string[], adapter: unknown): (() => void) & { replace(providers: string[]): void } }} */ (/** @type {unknown} */ (ctx.get('llm')))
   const sessionsFile = join(process.env.DSH_HOME || join(home, '.dsh'), 'agent-work', 'cli-sessions.json')
   /** @type {Record<string, string>} */
   let sessions = {}
@@ -304,7 +305,29 @@ export function apply(ctx, config) {
     },
     logger,
   })
-  ctx.effect(() => llm.registerAdapter(Object.keys(PROVIDERS), adapter), 'agent-work: command-line agents as models')
+  // Only the CLIs found on this machine are models: the rest stay out of the model list
+  // (Settings → Models still offers to install them). Re-checked after an install, when
+  // the settings page reads the CLIs, and every few minutes.
+  /** @type {((() => void) & { replace(providers: string[]): void }) | null} */
+  let modelRoutes = null
+  let listedProviders = ''
+  async function syncModels() {
+    const found = []
+    for (const [provider, def] of Object.entries(PROVIDERS)) if (await locate(cliOf(def.cli)) !== undefined) found.push(provider)
+    const key = found.join(',')
+    if (modelRoutes === null || key === listedProviders) return
+    modelRoutes.replace(found)
+    listedProviders = key
+    logger.info('command-line agents as models: %s', key || '(none found)')
+  }
+  ctx.effect(() => {
+    const handle = /** @type {(() => void) & { replace(providers: string[]): void }} */ (llm.registerAdapter(Object.keys(PROVIDERS), adapter))
+    handle.replace([])
+    modelRoutes = handle
+    void syncModels()
+    const timer = setInterval(() => { void syncModels() }, 5 * 60_000)
+    return () => { clearInterval(timer); modelRoutes = null; handle() }
+  }, 'agent-work: command-line agents as models')
   // Slash commands of 直连 sessions; they never become model messages.
   ctx.inject(['commands'], (scope) => {
     const commands = /** @type {{ register(command: { name: string, description: string, input?: { hint: string }, handler: (invocation: { agent: { sessionId: string }, rawInput: string }) => Promise<{ kind: 'success' | 'error', text: string }> }): () => void }} */ (/** @type {unknown} */ (scope.get('commands')))
