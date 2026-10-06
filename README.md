@@ -128,7 +128,7 @@ pnpm package package:desktop:mac:arm64       # 签名安装包
 
 ## 部署公司服务
 
-**现在的部署**：公司内网集群 office-test（Rancher + Fleet），清单在 infra 仓库 `fleet/apps/agent-work`（GL-Game-Group/infra PR #1）。
+**现在的部署**：公司内网集群 office-test（Rancher + Fleet），清单在 infra 仓库 `fleet/apps/agent-work`（GL-Game-Group/infra#1，2026-10-06 上线）。
 
 - 镜像：`main` 上 `admin/`、`gateway/`、`deploy/Dockerfile` 有改动时，`.github/workflows/image.yml` 调用组织流水线构建并推到 `glwork-registry.cn-hongkong.cr.aliyuncs.com/glwork/agent-work:<提交 SHA>`。发布新版本：在 infra 的 `fleet/apps/agent-work/company-service.yaml` 把镜像标签改成新的 SHA，提 PR 合并，Fleet 滚动更新。
 - 访问路径：`agent.glwork.net`、`frp.glwork.net`、`*.glwork.app` 的 DNS（external-dns 建，不经 Cloudflare 代理）指向香港 frps 8.217.141.116 → 集群里的 frpc → Traefik（cert-manager 签发的证书）→ 公司服务 / 成员 frps。
