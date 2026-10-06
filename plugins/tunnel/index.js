@@ -214,6 +214,13 @@ export function apply(ctx, config) {
     try {
       remote = /** @type {Remote} */ (/** @type {unknown} */ (await call('GET', '/agent-work/tunnels')))
       remoteError = null
+      // 手机远程 is on here, but this device has no remote tunnel at the company: signed in
+      // again (a new device), or deleted there. Register this device (idempotent at the company).
+      if (local.remote?.enabled === true && remote.server !== null && remote.settings.enabled && remote.settings.remote !== false && phoneTunnel() === undefined) {
+        await call('POST', '/agent-work/tunnels', { type: 'remote' })
+        remote = /** @type {Remote} */ (/** @type {unknown} */ (await call('GET', '/agent-work/tunnels')))
+        logger.info('registered 手机远程 for this device')
+      }
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
       if (error instanceof Refusal && error.status === 401) remote = null
