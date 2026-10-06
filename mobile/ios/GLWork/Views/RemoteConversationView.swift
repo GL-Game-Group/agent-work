@@ -36,6 +36,12 @@ struct RemoteConversationView: View {
         case steer
     }
 
+    /// The composer: typing, or holding to talk.
+    private enum InputMode {
+        case keyboard
+        case voice
+    }
+
     private enum ViewMode: String, CaseIterable {
         case conversation = "对话"
         case trajectory = "轨迹"
@@ -45,7 +51,7 @@ struct RemoteConversationView: View {
     @State private var draft = ""
     @State private var draftReferences: [RemoteDraftReference] = []
     @State private var composerSelection = NSRange(location: 0, length: 0)
-    @State private var composerTextHeight: CGFloat = 44
+    @State private var composerTextHeight: CGFloat = 24
     @State private var draftImages: [RemotePromptImage] = []
     @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var isPreparingImages = false
@@ -74,6 +80,19 @@ struct RemoteConversationView: View {
     @State private var debugSubagent: RemoteSubagentEntry?
     #endif
     @State private var composerFocused = false
+    @State private var inputMode: InputMode = .keyboard
+    @State private var showsSettings = false
+    @State private var showsAttachments = false
+    @State private var confirmsStop = false
+    @State private var showsCamera = false
+    @State private var showsFileImporter = false
+    /// Text files attached to the next message (their contents go into it).
+    @State private var draftFiles: [DraftTextFile] = []
+    @StateObject private var voice = VoiceInput()
+    @ObservedObject private var speaker = ReplySpeaker.shared
+    @State private var isHoldingToTalk = false
+    @State private var voiceWillCancel = false
+    @Environment(\.dismiss) private var dismissPage
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -89,6 +108,11 @@ struct RemoteConversationView: View {
             scenario == "trajectory" || scenario == "rc8-trajectory" ? .trajectory : .conversation
         )
         _showsModelPicker = State(initialValue: scenario == "models" || liveView == "models")
+        // UI checks in the simulator: open a sheet without a tap (GLWORK_SHEET=settings|attachments).
+        let sheet = ProcessInfo.processInfo.environment["GLWORK_SHEET"]
+        _showsSettings = State(initialValue: sheet == "settings")
+        _showsAttachments = State(initialValue: sheet == "attachments")
+        if ProcessInfo.processInfo.environment["GLWORK_INPUT"] == "voice" { _inputMode = State(initialValue: .voice) }
         if scenario == "details" {
             _selectedDetail = State(initialValue: Self.debugDetailItem)
         }
@@ -408,72 +432,7 @@ struct RemoteConversationView: View {
         .background(RemoteTheme.canvas)
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
-                RemotePageHeader(
-                    title: viewModel.session.title,
-                    subtitle: viewModel.session.projectName ?? remoteLocalized("GL Work 会话")
-                ) {
-                    HStack(spacing: 6) {
-                        Button {
-                            showsSubagents = true
-                        } label: {
-                            HStack(spacing: 5) {
-                                if viewModel.isLoadingSubagents,
-                                   viewModel.subagentCatalog == nil {
-                                    ProgressView().controlSize(.mini)
-                                } else {
-                                    Image(systemName: "person.2")
-                                        .font(.caption.weight(.semibold))
-                                }
-                                if subagentCount > 0 {
-                                    Text("\(subagentCount)")
-                                        .font(.caption2.monospacedDigit().weight(.bold))
-                                }
-                            }
-                            .foregroundStyle(subagentCount > 0 ? RemoteTheme.accent : Color.secondary)
-                            .padding(.horizontal, 10)
-                            .frame(minHeight: 34)
-                            .background(RemoteTheme.mutedSurface, in: Capsule())
-                            .frame(minWidth: 44, minHeight: 44)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(RemotePressableRowButtonStyle(cornerRadius: 12))
-                        .accessibilityLabel("子代理")
-                        .accessibilityValue(
-                            subagentCount > 0
-                                ? remoteLocalizedCount(subagentCount, unit: "subagent")
-                                : remoteLocalized("暂无")
-                        )
-
-                        RemoteStatusPill(
-                            text: viewModel.session.running ? "执行中" : "待命",
-                            color: viewModel.session.running ? RemoteTheme.accent : RemoteTheme.success,
-                            icon: viewModel.session.running ? "waveform" : "checkmark"
-                        )
-                    }
-                }
-                sessionSummaryLine
-                DSHConversationTabBar(selection: Binding(
-                    get: { viewMode },
-                    set: { selectViewMode($0) }
-                ))
-
-                if viewMode == .trajectory {
-                    trajectorySearch
-                }
-
-                if viewMode == .trajectory, viewModel.interaction != nil {
-                    Button {
-                        selectViewMode(.conversation)
-                    } label: {
-                        Label("有一项问题等待确认", systemImage: "exclamationmark.bubble.fill")
-                            .font(.caption.weight(.semibold))
-                            .frame(maxWidth: .infinity)
-                            .frame(minHeight: 44)
-                            .foregroundStyle(RemoteTheme.warning)
-                            .background(RemoteTheme.warning.opacity(0.08))
-                    }
-                    .buttonStyle(RemotePressableRowButtonStyle(cornerRadius: 9))
-                }
+                conversationHeader
 
                 if let error = viewModel.errorMessage, viewModel.hasLoadedConversationSnapshot {
                     RemoteInlineNotice(
@@ -506,6 +465,45 @@ struct RemoteConversationView: View {
         #endif
         .onChange(of: viewModel.session.running) { wasRunning, isRunning in
             if !wasRunning && isRunning { busyDelivery = .queue }
+            if wasRunning && !isRunning { speakLatestReply() }
+        }
+        .onChange(of: selectedPhotoItems) { _, items in
+            if !items.isEmpty { showsAttachments = false }
+        }
+        .onDisappear { speaker.stop() }
+        .sheet(isPresented: $showsSettings) {
+            ConversationSettingsSheet(
+                modelName: modelTriggerName,
+                presetName: viewModel.agentPresetName,
+                subagentCount: subagentCount,
+                speaker: speaker,
+                pickModel: { afterSheet { showsModelPicker = true } },
+                openSubagents: { afterSheet { showsSubagents = true } }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(RemoteTheme.canvas)
+        }
+        .sheet(isPresented: $showsAttachments) {
+            attachmentSheet
+                .presentationDetents([.height(attachmentSheetHeight)])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(RemoteTheme.canvas)
+        }
+        .confirmationDialog("停止当前任务？", isPresented: $confirmsStop, titleVisibility: .visible) {
+            Button("停止", role: .destructive) { Task { await viewModel.cancel() } }
+        } message: {
+            Text("Agent 会停在当前这一步，已经做完的不会撤销。")
+        }
+        .fileImporter(isPresented: $showsFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): if let url = urls.first { Task { await importFile(url) } }
+            case .failure(let error): composerNotice = error.localizedDescription
+            }
+        }
+        .fullScreenCover(isPresented: $showsCamera) {
+            CameraPicker { image in Task { await addCameraImage(image) } }
+                .ignoresSafeArea()
         }
         .onChange(of: selectedPhotoItems) { _, items in
             guard !items.isEmpty else { return }
@@ -780,16 +778,12 @@ struct RemoteConversationView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if showsReferenceSuggestions, let token = activeReferenceToken {
+        VStack(alignment: .leading, spacing: 6) {
+            if showsReferenceSuggestions, inputMode == .keyboard, let token = activeReferenceToken {
                 RemoteReferenceSuggestions(
                     token: token,
-                    fileLoader: { query in
-                        try await viewModel.fileReferences(query: query)
-                    },
-                    sessionLoader: { query in
-                        try await viewModel.sessionReferences(query: query)
-                    },
+                    fileLoader: { query in try await viewModel.fileReferences(query: query) },
+                    sessionLoader: { query in try await viewModel.sessionReferences(query: query) },
                     onSelectFile: insertFileReference,
                     onSelectSession: insertSessionReference,
                     onDismiss: { showsReferenceSuggestions = false }
@@ -797,35 +791,32 @@ struct RemoteConversationView: View {
             }
 
             if !draftImages.isEmpty || isPreparingImages {
-                RemoteDraftImageRail(
-                    images: draftImages,
-                    isPreparing: isPreparingImages,
-                    onRemove: removeDraftImage
-                )
+                RemoteDraftImageRail(images: draftImages, isPreparing: isPreparingImages, onRemove: removeDraftImage)
             }
 
-            ZStack(alignment: .topLeading) {
-                if draft.isEmpty {
-                    Text("告诉 Agent 接下来要做什么")
-                        .font(.body)
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 8)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
+            if !draftFiles.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(draftFiles) { file in
+                            HStack(spacing: 4) {
+                                Image(systemName: "doc.text").font(.caption2)
+                                Text(file.name).font(.caption).lineLimit(1)
+                                Button { draftFiles.removeAll { $0.id == file.id } } label: {
+                                    Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(remoteLocalizedFormat("移除 %@", file.name))
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 28)
+                            .background(RemoteTheme.mutedSurface, in: Capsule())
+                        }
+                    }
                 }
-                RemoteComposerTextView(
-                    text: $draft,
-                    references: $draftReferences,
-                    selection: $composerSelection,
-                    measuredHeight: $composerTextHeight,
-                    isFocused: Binding(
-                        get: { composerFocused },
-                        set: { composerFocused = $0 }
-                    ),
-                    isEnabled: viewModel.interaction == nil,
-                    maxHeight: verticalSizeClass == .compact ? 88 : 142
-                )
-                .frame(height: composerTextHeight)
+            }
+
+            if isHoldingToTalk {
+                voiceBubble
             }
 
             if let composerNotice {
@@ -836,21 +827,406 @@ struct RemoteConversationView: View {
             }
 
             if !modelIsRoutable {
-                Label("当前模型不可用，请重新选择", systemImage: "exclamationmark.triangle.fill")
+                Label("当前模型不可用，请在右上角设置里重新选择", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(RemoteTheme.warning)
             }
 
-            composerControls
+            HStack(alignment: .bottom, spacing: 4) {
+                Button {
+                    toggleInputMode()
+                } label: {
+                    Image(systemName: inputMode == .keyboard ? "mic" : "keyboard")
+                        .font(.system(size: 17, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                                .disabled(viewModel.interaction != nil)
+                .accessibilityLabel(inputMode == .keyboard ? "切换到语音输入" : "切换到键盘输入")
+
+                if inputMode == .keyboard {
+                    ZStack(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text("告诉 Agent 接下来要做什么")
+                                .font(.body)
+                                .foregroundStyle(.tertiary)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        RemoteComposerTextView(
+                            text: $draft,
+                            references: $draftReferences,
+                            selection: $composerSelection,
+                            measuredHeight: $composerTextHeight,
+                            isFocused: Binding(get: { composerFocused }, set: { composerFocused = $0 }),
+                            isEnabled: viewModel.interaction == nil,
+                            maxHeight: verticalSizeClass == .compact ? 88 : 132,
+                            onSubmit: sendDraft
+                        )
+                        .frame(height: composerTextHeight)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 40)
+                    .background(RemoteTheme.mutedSurface, in: RoundedRectangle(cornerRadius: 12))
+                } else {
+                    holdToTalkButton
+                }
+
+                Button {
+                    showsAttachments = true
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                                .disabled(isPreparingImages || viewModel.interaction != nil)
+                .accessibilityLabel("发送图片或文件")
+            }
         }
-        .padding(12)
-        .background(RemoteTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+        .padding(6)
+        .background(RemoteTheme.surface, in: RoundedRectangle(cornerRadius: 18))
         .overlay {
-            RoundedRectangle(cornerRadius: 22)
-                .stroke(RemoteTheme.hairline, lineWidth: 1)
-                .allowsHitTesting(false)
+            RoundedRectangle(cornerRadius: 18).stroke(RemoteTheme.hairline, lineWidth: 1).allowsHitTesting(false)
         }
-        .shadow(color: .black.opacity(0.10), radius: 12, y: 5)
+        .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
+    }
+
+    // MARK: Header
+
+    private var conversationHeader: some View {
+        HStack(spacing: 4) {
+            Button {
+                dismissPage()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 36, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("返回")
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(viewModel.session.title)
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(headerSubtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .accessibilityElement(children: .combine)
+
+            Spacer(minLength: 6)
+
+            statusControl
+
+            Button {
+                showsSettings = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .frame(width: 40, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("会话设置")
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 6)
+        .padding(.vertical, 2)
+    }
+
+    /// 工作区 · 模式 · 模型
+    private var headerSubtitle: String {
+        [viewModel.session.projectName, viewModel.agentPresetName, modelTriggerName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var statusControl: some View {
+        if viewModel.interaction != nil {
+            RemoteStatusPill(text: "等你选择", color: RemoteTheme.warning, icon: "hand.raised")
+        } else if viewModel.session.running {
+            Button {
+                confirmsStop = true
+            } label: {
+                RemoteStatusPill(
+                    text: viewModel.isCancelling ? "正在停止" : "运行中 · 停止",
+                    color: RemoteTheme.accent,
+                    icon: viewModel.isCancelling ? nil : "stop.fill"
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isCancelling)
+            .accessibilityHint("停止当前任务")
+        } else {
+            RemoteStatusPill(text: "待命", color: RemoteTheme.success, icon: "checkmark")
+        }
+    }
+
+    // MARK: Sending
+
+    /// The message, with attached text files after it.
+    private var outgoingText: String {
+        var text = submissionText
+        for file in draftFiles {
+            text += "\n\n" + remoteLocalizedFormat("附件 %@：", file.name) + "\n```\n" + file.text + "\n```"
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func sendDraft() {
+        guard canSendDraft || (!draftFiles.isEmpty && !viewModel.isSending && viewModel.interaction == nil && modelIsRoutable) else { return }
+        let outgoing = outgoingText
+        let outgoingImages = draftImages
+        guard !outgoing.isEmpty || !outgoingImages.isEmpty else { return }
+        shouldFollowNextSend = true
+        // Sent: put the keyboard away so the reply is in view (a failed send keeps the draft).
+        composerFocused = false
+        dismissKeyboard()
+        speaker.stop()
+        Task {
+            if await viewModel.send(outgoing, images: outgoingImages, steer: busyDelivery == .steer) {
+                draft = ""
+                draftReferences = []
+                composerSelection = NSRange(location: 0, length: 0)
+                draftImages = []
+                draftFiles = []
+                selectedPhotoItems = []
+                composerNotice = nil
+                showsReferenceSuggestions = false
+            } else {
+                shouldFollowNextSend = false
+            }
+        }
+    }
+
+    private func toggleInputMode() {
+        composerNotice = nil
+        if inputMode == .keyboard {
+            inputMode = .voice
+            composerFocused = false
+            dismissKeyboard()
+        } else {
+            inputMode = .keyboard
+            composerFocused = true
+        }
+    }
+
+    // MARK: Voice
+
+    private var holdToTalkButton: some View {
+        Text(isHoldingToTalk ? (voiceWillCancel ? "松开 取消" : "松开 发送") : "按住 说话")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(isHoldingToTalk ? (voiceWillCancel ? RemoteTheme.danger : RemoteTheme.accent) : Color.primary)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background(
+                isHoldingToTalk
+                    ? (voiceWillCancel ? RemoteTheme.danger : RemoteTheme.accent).opacity(0.14)
+                    : RemoteTheme.mutedSurface,
+                in: RoundedRectangle(cornerRadius: 12)
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !isHoldingToTalk { beginTalking() }
+                        voiceWillCancel = value.translation.height < -60
+                    }
+                    .onEnded { _ in endTalking() }
+            )
+            .disabled(viewModel.interaction != nil || viewModel.isSending)
+            .accessibilityLabel("按住说话，松开发送，上滑取消")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    /// What has been recognized so far, above the bar while the member holds to talk.
+    private var voiceBubble: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(voice.transcript.isEmpty ? remoteLocalized("正在听…") : voice.transcript)
+                .font(.body)
+                .foregroundStyle(voice.transcript.isEmpty ? .secondary : .primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(voiceWillCancel ? "松开手指，取消发送" : "松开发送，上滑取消")
+                .font(.caption2)
+                .foregroundStyle(voiceWillCancel ? RemoteTheme.danger : .secondary)
+        }
+        .padding(10)
+        .background(
+            (voiceWillCancel ? RemoteTheme.danger : RemoteTheme.accent).opacity(0.10),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
+        .accessibilityElement(children: .combine)
+    }
+
+    private func beginTalking() {
+        isHoldingToTalk = true
+        voiceWillCancel = false
+        composerNotice = nil
+        speaker.stop()
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Task {
+            guard await voice.authorize() else {
+                composerNotice = VoiceInput.Failure.denied.localizedDescription
+                isHoldingToTalk = false
+                return
+            }
+            // Released while the permission prompts were up: nothing to record.
+            guard isHoldingToTalk else { return }
+            do {
+                try voice.start()
+            } catch {
+                composerNotice = error.localizedDescription
+                isHoldingToTalk = false
+            }
+        }
+    }
+
+    private func endTalking() {
+        let cancelled = voiceWillCancel
+        isHoldingToTalk = false
+        voiceWillCancel = false
+        guard voice.isRecording, !cancelled else {
+            voice.cancel()
+            return
+        }
+        Task {
+            let text = await voice.finish()
+            guard !text.isEmpty else {
+                composerNotice = remoteLocalized("没有听清，请再说一次。")
+                return
+            }
+            draft = draft.isEmpty ? text : draft + " " + text
+            composerSelection = NSRange(location: (draft as NSString).length, length: 0)
+            sendDraft()
+        }
+    }
+
+    /// 播报: the newest reply, once the turn is over.
+    private func speakLatestReply() {
+        guard speaker.isEnabled else { return }
+        Task {
+            // The last items arrive with the turn's end; give them a moment.
+            try? await Task.sleep(for: .milliseconds(700))
+            if let reply = viewModel.items.last(where: { $0.kind == .assistant && !$0.text.isEmpty }) {
+                speaker.speakReply(reply.text)
+            }
+        }
+    }
+
+    // MARK: Attachments
+
+    private var attachmentSheetHeight: CGFloat {
+        UIImagePickerController.isSourceTypeAvailable(.camera) ? 330 : 280
+    }
+
+    private var attachmentSheet: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            RemoteSheetHeader(title: "发送图片或文件")
+            PhotosPicker(
+                selection: $selectedPhotoItems,
+                maxSelectionCount: max(remainingImageSlots, 1),
+                matching: .images
+            ) {
+                attachmentRow("照片", detail: "从相册选择图片", icon: "photo.on.rectangle")
+            }
+            .disabled(remainingImageSlots == 0)
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button { afterSheet(of: $showsAttachments) { showsCamera = true } } label: {
+                    attachmentRow("拍照", detail: "拍一张发给 Agent", icon: "camera")
+                }
+            }
+            Button { afterSheet(of: $showsAttachments) { showsFileImporter = true } } label: {
+                attachmentRow("文件", detail: "图片，或 200KB 以内的文本文件", icon: "doc")
+            }
+            Button {
+                showsAttachments = false
+                inputMode = .keyboard
+                beginReferenceInsertion()
+            } label: {
+                attachmentRow("引用", detail: "电脑上的文件或其他会话", icon: "at")
+            }
+            .disabled(viewModel.supportsReferences == false)
+            Spacer(minLength: 0)
+        }
+        .buttonStyle(RemotePressableRowButtonStyle(cornerRadius: 10))
+        .padding(.horizontal, RemoteTheme.pagePadding)
+    }
+
+    private func attachmentRow(_ title: String, detail: String, icon: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 17))
+                .foregroundStyle(RemoteTheme.accent)
+                .frame(width: 34, height: 34)
+                .background(RemoteTheme.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(remoteLocalized(title)).font(.body).foregroundStyle(.primary)
+                Text(remoteLocalized(detail)).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+    }
+
+    /// Present something after the current sheet has gone (two sheets cannot overlap).
+    private func afterSheet(of sheet: Binding<Bool>? = nil, _ action: @escaping () -> Void) {
+        if let sheet { sheet.wrappedValue = false } else { showsSettings = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: action)
+    }
+
+    private func addCameraImage(_ image: UIImage) async {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        isPreparingImages = true
+        defer { isPreparingImages = false }
+        do {
+            let prepared = try await RemoteImagePreparer.prepare(data: data, declaredMediaType: "image/jpeg", name: remoteLocalized("照片.jpg"), limits: effectiveImageLimits)
+            draftImages.append(prepared)
+        } catch {
+            composerNotice = error.localizedDescription
+        }
+    }
+
+    /// Images go as images; text files (code, Markdown, logs) up to 200KB go inside the message.
+    private func importFile(_ url: URL) async {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url) else {
+            composerNotice = remoteLocalized("读不了这个文件。")
+            return
+        }
+        let type = UTType(filenameExtension: url.pathExtension)
+        if type?.conforms(to: .image) == true {
+            isPreparingImages = true
+            defer { isPreparingImages = false }
+            do {
+                let prepared = try await RemoteImagePreparer.prepare(data: data, declaredMediaType: type?.preferredMIMEType, name: url.lastPathComponent, limits: effectiveImageLimits)
+                draftImages.append(prepared)
+            } catch {
+                composerNotice = error.localizedDescription
+            }
+            return
+        }
+        guard data.count <= 200 * 1024, let text = String(data: data, encoding: .utf8), !text.contains("\u{0}") else {
+            composerNotice = remoteLocalized("暂时只能发送图片和 200KB 以内的文本文件（代码、Markdown、日志等）。")
+            return
+        }
+        draftFiles.append(DraftTextFile(name: url.lastPathComponent, text: text))
+        composerNotice = nil
     }
 
     @ViewBuilder
@@ -1095,7 +1471,7 @@ struct RemoteConversationView: View {
     }
 
     private var canSendDraft: Bool {
-        (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draftImages.isEmpty)
+        (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draftImages.isEmpty || !draftFiles.isEmpty)
             && !viewModel.isSending
             && !viewModel.isCancelling
             && !isPreparingImages
@@ -1720,6 +2096,8 @@ private struct RemoteComposerTextView: UIViewRepresentable {
     @Binding var isFocused: Bool
     let isEnabled: Bool
     let maxHeight: CGFloat
+    /// When set, the keyboard's return key reads 发送 and sends instead of starting a new line.
+    var onSubmit: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -1734,7 +2112,7 @@ private struct RemoteComposerTextView: UIViewRepresentable {
         view.adjustsFontForContentSizeCategory = true
         view.font = .preferredFont(forTextStyle: .body)
         view.keyboardDismissMode = .interactive
-        view.returnKeyType = .default
+        view.returnKeyType = onSubmit == nil ? .default : .send
         view.smartQuotesType = .no
         view.smartDashesType = .no
         view.autocorrectionType = .yes
@@ -1877,6 +2255,10 @@ private struct RemoteComposerTextView: UIViewRepresentable {
             shouldChangeTextIn range: NSRange,
             replacementText replacement: String
         ) -> Bool {
+            if replacement == "\n", let submit = parent.onSubmit {
+                submit()
+                return false
+            }
             let references = parent.references
             if range.length == 0,
                let reference = references.first(where: {
@@ -1984,7 +2366,8 @@ private struct RemoteComposerTextView: UIViewRepresentable {
             let fitting = view.sizeThatFits(
                 CGSize(width: width, height: .greatestFiniteMagnitude)
             ).height
-            let next = min(max(ceil(fitting), 44), parent.maxHeight)
+            // One line when empty, growing with the text up to maxHeight.
+            let next = min(max(ceil(fitting), ceil(view.font?.lineHeight ?? 22)), parent.maxHeight)
             view.isScrollEnabled = fitting > parent.maxHeight
             guard abs(parent.measuredHeight - next) > 0.5 else { return }
             DispatchQueue.main.async {

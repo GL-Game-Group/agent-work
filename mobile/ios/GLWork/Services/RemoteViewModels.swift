@@ -166,6 +166,9 @@ final class RemoteConversationViewModel: ObservableObject {
     @Published private(set) var goal: RemoteGoalState?
     @Published private(set) var plan: RemotePlanState?
     @Published private(set) var imageLimits: RemoteImageLimits?
+    /// The session's mode (agent preset id) and the Mac's names for the modes.
+    @Published private(set) var agentPreset: String?
+    @Published private(set) var agentPresetNames: [String: String] = [:]
     @Published private(set) var fileReferencesSupported: Bool?
     @Published private(set) var sessionReferencesSupported: Bool?
     @Published private(set) var subagentCatalog: RemoteSubagentCatalog?
@@ -222,9 +225,22 @@ final class RemoteConversationViewModel: ObservableObject {
         return nil
     }
 
+    /// The current mode as people read it; the Mac's own names, else the known ones.
+    var agentPresetName: String? {
+        guard let id = agentPreset else { return nil }
+        return agentPresetNames[id] ?? ["default": remoteLocalized("默认"), "standard": remoteLocalized("标准模式"), "direct": remoteLocalized("直连模式")][id] ?? id
+    }
+
+    func loadAgentPresetNames() async {
+        // Older GL Work on the Mac does not offer the list; the known names stand in.
+        guard let presets = try? await client.agentPresets() else { return }
+        agentPresetNames = Dictionary(presets.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+    }
+
     func monitor() async {
         let modelsTask = Task { [weak self] in
             await self?.refreshModels()
+            await self?.loadAgentPresetNames()
         }
         let eventsTask = Task { [weak self] in
             guard let self else { return }
@@ -269,6 +285,7 @@ final class RemoteConversationViewModel: ObservableObject {
             goal = snapshot.goal
             plan = snapshot.plan
             imageLimits = snapshot.imageLimits
+            if let preset = snapshot.agentPreset { agentPreset = preset }
             hasMoreHistory = snapshot.hasMore
             hasLoadedConversationSnapshot = true
             if let latest = sessions.first(where: { $0.id == session.id }) {

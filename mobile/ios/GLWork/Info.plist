@@ -22,6 +22,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>按住说话时录音，转成文字发给你电脑上的 Agent。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>把你按住说话的内容转成文字。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>拍照后作为图片发给你电脑上的 Agent。</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSAppTransportSecurity</key>

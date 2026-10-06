@@ -25,6 +25,7 @@ protocol HarnessRemoteClient: Sendable {
     ) async throws
     func interruptSubagent(parentSessionID: String, child: RemoteSubagentEntry) async throws
     func models(sessionID: String) async throws -> RemoteModelDirectory
+    func agentPresets() async throws -> [RemoteAgentPreset]
     func selectModel(sessionID: String, selection: RemoteModelSelection) async throws -> RemoteModelSelection
     func send(
         _ text: String,
@@ -272,6 +273,11 @@ struct LiveHarnessRemoteClient: HarnessRemoteClient {
                 mode: RemoteSubagentEntry.Mode.continuable.rawValue
             )
         )
+    }
+
+    func agentPresets() async throws -> [RemoteAgentPreset] {
+        let response: AgentPresetRosterWire = try await call("agentPresets/list", payload: EmptyPayload())
+        return response.presets.map { RemoteAgentPreset(id: $0.id, name: $0.name ?? $0.id) }
     }
 
     func models(sessionID: String) async throws -> RemoteModelDirectory {
@@ -1024,6 +1030,10 @@ actor DemoHarnessRemoteClient: HarnessRemoteClient {
         demoSubagentRunning = false
     }
 
+    func agentPresets() async throws -> [RemoteAgentPreset] {
+        [RemoteAgentPreset(id: "default", name: "默认"), RemoteAgentPreset(id: "direct", name: "直连模式")]
+    }
+
     func models(sessionID: String) async throws -> RemoteModelDirectory {
         RemoteModelDirectory(
             current: selectedModel,
@@ -1623,6 +1633,11 @@ private struct SessionSummaryWire: Decodable {
     let cwd: String?
     let projections: SessionProjectionsWire?
 }
+private struct AgentPresetRosterWire: Decodable {
+    struct Row: Decodable { let id: String; let name: String? }
+    let presets: [Row]
+}
+
 private struct SessionProjectionsWire: Decodable {
     let values: [String: JSONValue]
 }
@@ -2214,7 +2229,8 @@ private enum ConversationFolder {
             ),
             goal: goalState(from: history.projections),
             plan: planState(from: history.projections),
-            imageLimits: imageLimits(from: history.projections)
+            imageLimits: imageLimits(from: history.projections),
+            agentPreset: history.projections?.values["agentPreset"]?.stringValue
         )
     }
 

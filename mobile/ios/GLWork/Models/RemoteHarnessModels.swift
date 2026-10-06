@@ -99,6 +99,14 @@ struct RemoteConversationSnapshot: Hashable, Sendable {
     var goal: RemoteGoalState? = nil
     var plan: RemotePlanState? = nil
     var imageLimits: RemoteImageLimits? = nil
+    /// The mode (agent preset) the session runs, e.g. `direct`; nil when the Mac does not say.
+    var agentPreset: String? = nil
+}
+
+/// A mode (agent preset) the Mac offers.
+struct RemoteAgentPreset: Hashable, Sendable {
+    let id: String
+    let name: String
 }
 
 struct RemoteImageLimits: Hashable, Sendable {
