@@ -372,6 +372,15 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     assert.ok(Array.isArray(await remoteRpc('fileReferences/list', { args: { agentId: sessionId, query: '' } })))
     assert.ok(Array.isArray(await remoteRpc('sessionReferenceResolver/candidates', { args: { agentId: sessionId, query: '' } })))
     socket.close()
+    // The company loses this device's remote tunnel (as after signing in again, a new device):
+    // GL Work, still set to 手机远程 here, registers it again by itself.
+    store.db.prepare("delete from tunnels where id = ?").run(hosts[0].id)
+    const back = await until(v => v.phone?.state === 'on', '手机远程 back', true)
+    assert.equal(back.phone.enabled, true)
+    const again = (await (await fetch(`${gatewayOrigin}/agent-work/remote/hosts`, { headers: asPhone })).json()).hosts
+    assert.equal(again.length, 1)
+    assert.notEqual(again[0].id, hosts[0].id, 'a new registration')
+    hosts[0] = again[0]
     // Turned off: the Mac drops off the relay.
     await action({ op: 'remote-off' })
     await until(v => v.phone?.state === 'off', '手机远程 off')
