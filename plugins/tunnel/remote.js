@@ -27,6 +27,8 @@ export const METHODS = new Set([
   'session.selectModel', 'session.prompt', 'session.updateQueue', 'session.cancel', 'subagent.list', 'subagent.history', 'subagent.prompt', 'subagent.interrupt',
   // @-mentions in the composer: the Host's own Remote methods, scoped to the session ({ args: { agentId, query } }).
   'fileReferences/list', 'sessionReferenceResolver/candidates',
+  // The modes (agent presets) a session can run, to name the session's mode on the phone.
+  'agentPresets/list',
 ])
 const MAX_BODY_BYTES = 32 * 1024 * 1024
 
@@ -148,6 +150,7 @@ export async function invokeRemote(gateway, endpoint, payload, host, signal) {
     case 'subagent.prompt': return invoke('subagents', 'prompt', { request: payload })
     case 'subagent.interrupt': return invoke('subagents', 'interruptByParent', { childSessionId: payload.childSessionId, parentSessionId: payload.parentSessionId, mode: payload.mode })
     case 'session.prompt': return invoke('session', 'prompt', { request: { ...payload, requestId: payload.requestId ?? randomUUID() } })
+    case 'agentPresets/list': return invoke('agentPresets', 'list', {})
     case 'fileReferences/list':
     case 'sessionReferenceResolver/candidates': {
       const [namespace = '', method = ''] = endpoint.split('/')

@@ -368,6 +368,9 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     assert.match(JSON.stringify(history.events), /hello from the phone/u)
     const models = await remoteRpc('session.models', { sessionId })
     assert.ok(Array.isArray(models.groups))
+    // The modes the phone names sessions' modes with.
+    const { presets } = await remoteRpc('agentPresets/list')
+    assert.ok(presets.some(p => p.isDefault), JSON.stringify(presets))
     // @-mentions in the phone's composer.
     assert.ok(Array.isArray(await remoteRpc('fileReferences/list', { args: { agentId: sessionId, query: '' } })))
     assert.ok(Array.isArray(await remoteRpc('sessionReferenceResolver/candidates', { args: { agentId: sessionId, query: '' } })))
