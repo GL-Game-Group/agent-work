@@ -1044,6 +1044,8 @@ struct RemoteConversationView: View {
                 let outgoing = submissionText
                 let outgoingImages = draftImages
                 shouldFollowNextSend = true
+                // Sent: put the keyboard away so the reply is in view (a failed send keeps the draft).
+                composerFocused = false
                 Task {
                     if await viewModel.send(
                         outgoing,
@@ -3401,6 +3403,7 @@ private struct RemoteSubagentConversationView: View {
                     Button {
                         let outgoing = draft
                         shouldFollowNextSend = true
+                        composerFocused = false
                         Task {
                             if await viewModel.send(outgoing) {
                                 draft = ""
