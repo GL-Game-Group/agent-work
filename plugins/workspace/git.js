@@ -104,3 +104,39 @@ export function refusesInit(path, home) {
   const normalized = path.replace(/[\\/]+$/u, '')
   return normalized === '' || normalized === home.replace(/[\\/]+$/u, '') || /^[A-Za-z]:$/u.test(normalized) || dirname(normalized) === normalized
 }
+
+/**
+ * Where members keep their code, searched for clones made outside GL Work
+ * (GL Work's own clone root first). Relative to the home directory.
+ */
+export const SEARCH_ROOTS = ['GLWork', 'Documents', 'Desktop', 'Downloads', 'code', 'Code', 'src', 'dev', 'work', 'Work',
+  'projects', 'Projects', 'repos', 'workspace', 'workspaces', 'github', 'GitHub', 'git']
+
+/** How deep below a search root a repository may sit (`~/Documents/work/team/<repo>` is 3). */
+export const SEARCH_DEPTH = 4
+
+/**
+ * Directories never searched: hidden ones, dependencies and build output, and
+ * macOS's media and app data folders.
+ * @param {string} name
+ */
+export function skipsDir(name) {
+  return name.startsWith('.') || ['node_modules', 'vendor', 'dist', 'build', 'target', 'Library', 'Applications',
+    'Pictures', 'Movies', 'Music', 'Photos Library.photoslibrary'].includes(name) || name.endsWith('.worktrees') || name.endsWith('.app')
+}
+
+/**
+ * The repository a `.git/config` points at through its `origin` remote, as {@link repoIdentity}.
+ * @param {string} text - the config file.
+ * @returns {string | undefined}
+ */
+export function originOfConfig(text) {
+  let inOrigin = false
+  for (const raw of text.split(/\r?\n/u)) {
+    const line = raw.trim()
+    if (line.startsWith('[')) { inOrigin = /^\[remote\s+"origin"\]$/u.test(line); continue }
+    const url = inOrigin ? /^url\s*=\s*(.+)$/u.exec(line) : null
+    if (url !== null) return repoIdentity(url[1] ?? '')
+  }
+  return undefined
+}

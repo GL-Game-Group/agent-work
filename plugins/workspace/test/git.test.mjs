@@ -1,7 +1,7 @@
 /** Workspace helpers: repository identity, naming, and reading git and gh output. */
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { branchFor, cloneProgress, deviceCode, refusesInit, repoIdentity, validBranch, worktreeDir } from '../git.js'
+import { branchFor, cloneProgress, deviceCode, refusesInit, repoIdentity, validBranch, worktreeDir, originOfConfig, skipsDir } from '../git.js'
 
 describe('repository identity', () => {
   it('treats every spelling of one GitHub repository as the same', () => {
@@ -43,5 +43,17 @@ describe('reading output', () => {
     assert.deepEqual(cloneProgress('Receiving objects:  50% (5/10), 1.2 MiB'), { percent: 40, stage: 'Receiving objects' })
     assert.deepEqual(cloneProgress('Resolving deltas: 100% (3/3), done.'), { percent: 95, stage: 'Resolving deltas' })
     assert.equal(cloneProgress('Cloning into \'repo\'...'), undefined)
+  })
+
+  it('reads the origin a clone points at, from .git/config', () => {
+    const config = '[core]\n\tbare = false\n[remote "upstream"]\n\turl = https://github.com/someone/fork.git\n[remote "origin"]\n\turl = git@github.com:GL-Game-Group/Agent-Work.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n'
+    assert.equal(originOfConfig(config), 'github.com/gl-game-group/agent-work')
+    assert.equal(originOfConfig('[remote "upstream"]\n\turl = https://github.com/a/b\n'), undefined)
+    assert.equal(originOfConfig(''), undefined)
+  })
+
+  it('does not search dependencies, build output, hidden or app folders', () => {
+    for (const name of ['node_modules', '.cache', 'Library', 'dist', 'demo.worktrees', 'Xcode.app']) assert.equal(skipsDir(name), true, name)
+    for (const name of ['work', 'agent-work', 'GLWork']) assert.equal(skipsDir(name), false, name)
   })
 })

@@ -12,7 +12,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 
 const DSH_DIR = process.env.AGENT_WORK_DSH
@@ -34,6 +34,7 @@ describe('工作区管理 in a real Host', { skip: DSH_DIR === undefined ? 'set 
   const home = join(base, 'dsh-home')
   const remotes = join(base, 'remotes')
   const root = join(base, 'GLWork')
+  const fakeHome = join(base, 'home')
   let host, origin, cookie, realGlobal
 
   async function rpc(method, args = {}) {
@@ -93,12 +94,14 @@ esac
 
     const dsh = join(DSH_DIR, 'node_modules', '.bin', 'dsh')
     // git's global configuration is the test's own file: the stand-in's setup-git and every read stay inside it.
+    // The Host keeps the real home whatever HOME says: searchRoots points the clone search here instead.
+    mkdirSync(join(fakeHome, 'Documents'), { recursive: true })
     const env = { ...process.env, DSH_HOME: home, GIT_CONFIG_GLOBAL: join(base, 'gitconfig'), ...GIT_ENV }
     writeFileSync(join(base, 'gitconfig'), '')
     realGlobal = existsSync(join(homedir(), '.gitconfig')) ? readFileSync(join(homedir(), '.gitconfig'), 'utf8') : null
     execFileSync(dsh, ['plugin', '--profile', 'web', 'add', `file:${PLUGIN}`], { env, stdio: 'ignore' })
     writeFileSync(join(home, 'profiles', 'web', 'cordis.patch.yml'),
-      `- id: agent-work-workspace\n  config:\n    org: GL-Game-Group\n    root: '${root}'\n    ghPath: '${gh}'\n`)
+      `- id: agent-work-workspace\n  config:\n    org: GL-Game-Group\n    root: '${root}'\n    ghPath: '${gh}'\n    searchRoots: ['${join(fakeHome, 'Documents')}']\n`)
     const port = await freePort()
     origin = `http://127.0.0.1:${port}`
     host = spawn(dsh, ['web', '--no-open', '--port', String(port)], { env, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -161,6 +164,30 @@ esac
     const again = await finish(await api('create', { repo: 'GL-Game-Group/demo', mode: 'clone' }))
     assert.equal(again.state, 'failed')
     assert.match(again.error, /已经存在/u)
+  })
+
+  it('finds a clone made outside GL Work and opens it as it is', async () => {
+    // Cloned by hand into ~/Documents/work/demo, before GL Work knew about it.
+    const outside = join(fakeHome, 'Documents', 'work', 'demo')
+    mkdirSync(dirname(outside), { recursive: true })
+    git(base, 'clone', join(remotes, 'GL-Game-Group', 'demo.git'), outside)
+    git(outside, 'remote', 'set-url', 'origin', 'git@github.com:GL-Game-Group/demo.git')
+    // node_modules and hidden folders are not searched.
+    mkdirSync(join(fakeHome, 'Documents', 'node_modules', 'demo', '.git'), { recursive: true })
+    writeFileSync(join(fakeHome, 'Documents', 'node_modules', 'demo', '.git', 'config'), '[remote "origin"]\n\turl = https://github.com/GL-Game-Group/demo.git\n')
+    const real = realpathSync(outside)
+    const plan = await api('plan', { repo: 'GL-Game-Group/demo' })
+    assert.equal(plan.mode, 'worktree')
+    assert.deepEqual(plan.existing.map(e => e.mainRoot).sort(), [clone, real].sort())
+    const repos = await api('repos')
+    assert.equal(repos.find(r => r.repo === 'GL-Game-Group/demo').local, true)
+    const job = await finish(await api('create', { repo: 'GL-Game-Group/demo', mode: 'open', mainRoot: real }))
+    assert.equal(job.state, 'done', JSON.stringify(job))
+    assert.equal(job.path, real)
+    // A different repository's folder is refused.
+    const wrong = await finish(await api('create', { repo: 'GL-Game-Group/other', mode: 'open', mainRoot: real }))
+    assert.equal(wrong.state, 'failed')
+    assert.match(wrong.error, /不一致/u)
   })
 
   it('creates a workspace from a local folder, initializing git only when asked', async () => {
