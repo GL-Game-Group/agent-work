@@ -254,6 +254,19 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     await action({ op: 'delete', id: t.id })
   })
 
+  it('reaches a dev server that listens on IPv6 localhost only (Vite on recent Node)', async () => {
+    const v6 = createServer((_req, res) => { res.end('hello over ::1') })
+    const port = await new Promise((done) => { v6.listen(0, '::1', () => { done(v6.address().port) }) })
+    children.push({ kill: () => { v6.close() } })
+    const created = await action({ op: 'create', type: 'http', name: 'vite', localPort: port, protection: 'public' })
+    const view = await until(v => v.tunnels.find(t => t.id === created.created)?.state === 'on', 'v6 tunnel on')
+    const t = view.tunnels.find(x => x.id === created.created)
+    let reply = { status: 0, body: '' }
+    for (let i = 0; i < 25 && reply.body !== 'hello over ::1'; i += 1) { reply = await vhost(vhostPort, t.host); if (reply.body !== 'hello over ::1') await sleep(200) }
+    assert.equal(reply.body, 'hello over ::1')
+    await action({ op: 'delete', id: t.id })
+  })
+
   it('shares SSH both ways: bob reaches alice, alice reaches bob', async () => {
     const created = await action({ op: 'create', type: 'ssh', name: 'box', localPort: sshPort, sshAccess: ['bob'] })
     await until(v => v.tunnels.find(t => t.id === created.created)?.state === 'on', 'ssh tunnel on')
