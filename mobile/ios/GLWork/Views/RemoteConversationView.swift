@@ -24,6 +24,12 @@ private struct RemoteDraftReference: Identifiable, Hashable {
     let kind: Kind
 }
 
+/// Unsent drafts by session, so leaving a conversation and coming back keeps what was typed.
+@MainActor
+private enum RemoteDraftStore {
+    static var drafts: [String: (text: String, references: [RemoteDraftReference])] = [:]
+}
+
 private struct RemoteActiveReferenceToken: Hashable {
     let range: NSRange
     let query: String
@@ -268,6 +274,21 @@ struct RemoteConversationView: View {
                 }
                 .coordinateSpace(name: "conversation-scroll")
                 .scrollDismissesKeyboard(.interactively)
+                // Tapping the conversation puts the keyboard away; the draft stays in the box.
+                .simultaneousGesture(TapGesture().onEnded {
+                    guard composerFocused else { return }
+                    composerFocused = false
+                    dismissKeyboard()
+                })
+                .onChange(of: composerFocused) { _, focused in
+                    if focused { scrollToBottom(proxy, after: 0.35) }
+                }
+                .onChange(of: composerTextHeight) { _, _ in
+                    if composerFocused { scrollToBottom(proxy) }
+                }
+                .onChange(of: draft) { _, _ in
+                    if composerFocused, !isNearBottom { scrollToBottom(proxy) }
+                }
                 .onPreferenceChange(ConversationBottomOffsetKey.self) { bottom in
                     guard viewMode == .conversation,
                           didInitialPosition,
@@ -455,9 +476,15 @@ struct RemoteConversationView: View {
         .remoteNavigationChromeHidden()
         .onAppear {
             RemoteNotificationManager.shared.setActiveSession(viewModel.session.id)
+            if draft.isEmpty, let saved = RemoteDraftStore.drafts[viewModel.session.id] {
+                draft = saved.text
+                draftReferences = saved.references
+                composerSelection = NSRange(location: (saved.text as NSString).length, length: 0)
+            }
         }
         .onDisappear {
             RemoteNotificationManager.shared.clearActiveSession(viewModel.session.id)
+            RemoteDraftStore.drafts[viewModel.session.id] = draft.isEmpty ? nil : (draft, draftReferences)
         }
         .task { await viewModel.monitor() }
         #if DEBUG
@@ -665,6 +692,16 @@ struct RemoteConversationView: View {
     }
     #endif
 
+    /// Messages waiting for the running turn to end. A message this phone just sent shows in
+    /// the conversation instead, and an idle session takes its queue at once, so neither is listed.
+    private var visibleQueue: [RemoteQueuedMessage] {
+        guard viewModel.session.running else { return [] }
+        let sent = viewModel.outgoingTexts
+        return viewModel.queue.filter { item in
+            item.placement == .queued && !sent.contains(item.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+        }
+    }
+
     private var subagentCount: Int {
         viewModel.subagentCatalog?.entries.lazy.filter { !$0.isDiagnostic }.count ?? 0
     }
@@ -681,8 +718,8 @@ struct RemoteConversationView: View {
                 .padding(.bottom, -5)
                 .zIndex(0)
             }
-            if viewModel.queue.contains(where: { $0.placement == .queued }) {
-                QueueDockView(queue: viewModel.queue, isRunning: viewModel.session.running) { item, action in
+            if !visibleQueue.isEmpty {
+                QueueDockView(queue: visibleQueue, isRunning: viewModel.session.running) { item, action in
                     Task { await viewModel.updateQueue(item, action: action) }
                 }
                 .padding(.horizontal, 8)
@@ -997,18 +1034,37 @@ struct RemoteConversationView: View {
         composerFocused = false
         dismissKeyboard()
         speaker.stop()
+        // The message shows in the conversation at once (the view model adds it before the
+        // network call); the box empties now and gets the draft back if the send fails.
+        let saved = (draft, draftReferences, draftFiles)
+        draft = ""
+        draftReferences = []
+        composerSelection = NSRange(location: 0, length: 0)
+        draftImages = []
+        draftFiles = []
+        selectedPhotoItems = []
+        composerNotice = nil
+        showsReferenceSuggestions = false
+        RemoteDraftStore.drafts[viewModel.session.id] = nil
         Task {
-            if await viewModel.send(outgoing, images: outgoingImages, steer: busyDelivery == .steer) {
-                draft = ""
-                draftReferences = []
-                composerSelection = NSRange(location: 0, length: 0)
-                draftImages = []
-                draftFiles = []
-                selectedPhotoItems = []
-                composerNotice = nil
-                showsReferenceSuggestions = false
-            } else {
+            if await !viewModel.send(outgoing, images: outgoingImages, steer: busyDelivery == .steer) {
                 shouldFollowNextSend = false
+                if draft.isEmpty {
+                    (draft, draftReferences, draftFiles) = saved
+                    draftImages = outgoingImages
+                    composerSelection = NSRange(location: (draft as NSString).length, length: 0)
+                }
+            }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, after delay: Double = 0) {
+        guard viewMode == .conversation, didInitialPosition else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo("conversation-bottom", anchor: .bottom)
             }
         }
     }
@@ -2190,7 +2246,8 @@ private struct RemoteComposerTextView: UIViewRepresentable {
         let measured = uiView.sizeThatFits(
             CGSize(width: width, height: .greatestFiniteMagnitude)
         )
-        return CGSize(width: width, height: min(max(measured.height, 44), maxHeight))
+        let line = ceil(uiView.font?.lineHeight ?? 22)
+        return CGSize(width: width, height: min(max(measured.height, line), maxHeight))
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -4168,6 +4225,7 @@ private struct ConversationItemView: View {
                             .background(RemoteTheme.userBubble, in: RoundedRectangle(cornerRadius: 22))
                     }
                 }
+                .opacity(item.state == .running ? 0.6 : 1)
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 10) {

@@ -166,6 +166,10 @@ final class RemoteConversationViewModel: ObservableObject {
     @Published private(set) var goal: RemoteGoalState?
     @Published private(set) var plan: RemotePlanState?
     @Published private(set) var imageLimits: RemoteImageLimits?
+    /// Messages sent from this phone that the Mac's conversation does not show yet;
+    /// they appear at the end of `items` right away.
+    private var outgoing: [RemoteConversationItem] = []
+    private var snapshotItems: [RemoteConversationItem] = []
     /// The session's mode (agent preset id) and the Mac's names for the modes.
     @Published private(set) var agentPreset: String?
     @Published private(set) var agentPresetNames: [String: String] = [:]
@@ -279,7 +283,7 @@ final class RemoteConversationViewModel: ObservableObject {
             async let latestSessions = client.sessions()
             let (snapshot, sessions) = try await (latestSnapshot, latestSessions)
             guard generation == refreshGeneration, !Task.isCancelled else { return }
-            items = snapshot.items
+            setItems(snapshot.items)
             trajectory = snapshot.trajectory
             stats = snapshot.stats
             goal = snapshot.goal
@@ -379,6 +383,17 @@ final class RemoteConversationViewModel: ObservableObject {
               !isCancelling else { return false }
         isSending = true
         defer { isSending = false }
+        // Show the message at once; the Mac's copy replaces it when the conversation catches up.
+        let local = RemoteConversationItem(
+            id: "outgoing-\(UUID().uuidString)",
+            kind: .user,
+            title: nil,
+            text: trimmed.isEmpty ? remoteLocalizedFormat("%lld 张图片", images.count) : trimmed,
+            time: Date(),
+            state: .running
+        )
+        outgoing.append(local)
+        setItems(snapshotItems)
         do {
             try await client.send(
                 trimmed,
@@ -389,9 +404,25 @@ final class RemoteConversationViewModel: ObservableObject {
             await refresh(silently: true)
             return true
         } catch {
+            outgoing.removeAll { $0.id == local.id }
+            setItems(snapshotItems)
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    /// The text of messages sent from this phone and not yet in the conversation.
+    var outgoingTexts: Set<String> { Set(outgoing.map(\.text)) }
+
+    /// The Mac's items, then this phone's messages it does not show yet.
+    private func setItems(_ latest: [RemoteConversationItem]) {
+        snapshotItems = latest
+        let tail = latest.suffix(40)
+        outgoing.removeAll { local in
+            tail.contains { $0.kind == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == local.text }
+                || (Date().timeIntervalSince(local.time) > 120 && !queue.contains { $0.text?.trimmingCharacters(in: .whitespacesAndNewlines) == local.text })
+        }
+        items = latest + outgoing
     }
 
     func fileReferences(query: String) async throws -> [RemoteFileReferenceCandidate] {
