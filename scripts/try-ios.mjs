@@ -56,5 +56,10 @@ run('xcodebuild', [
   '-destination', `id=${phone.id}`, '-derivedDataPath', DERIVED, '-allowProvisioningUpdates', '-quiet', 'build',
 ])
 run('xcrun', ['devicectl', 'device', 'install', 'app', '--device', phone.id, join(DERIVED, 'Build', 'Products', 'Debug-iphoneos', 'GLWork.app')])
-run('xcrun', ['devicectl', 'device', 'process', 'launch', '--terminate-existing', '--device', phone.id, BUNDLE_ID])
-console.log(`try:ios: GL Work is open on ${phone.name}`)
+try {
+  execFileSync('xcrun', ['devicectl', 'device', 'process', 'launch', '--terminate-existing', '--device', phone.id, BUNDLE_ID], { stdio: 'pipe' })
+  console.log(`try:ios: GL Work is open on ${phone.name}`)
+} catch {
+  // Installed all the same; iOS opens apps only on an unlocked phone.
+  console.log(`try:ios: installed on ${phone.name}; unlock the phone and open GL Work`)
+}

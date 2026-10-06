@@ -411,9 +411,6 @@ final class RemoteConversationViewModel: ObservableObject {
         }
     }
 
-    /// The text of messages sent from this phone and not yet in the conversation.
-    var outgoingTexts: Set<String> { Set(outgoing.map(\.text)) }
-
     /// The Mac's items, then this phone's messages it does not show yet.
     private func setItems(_ latest: [RemoteConversationItem]) {
         snapshotItems = latest
@@ -422,7 +419,15 @@ final class RemoteConversationViewModel: ObservableObject {
             tail.contains { $0.kind == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == local.text }
                 || (Date().timeIntervalSince(local.time) > 120 && !queue.contains { $0.text?.trimmingCharacters(in: .whitespacesAndNewlines) == local.text })
         }
-        items = latest + outgoing
+        // Messages the Mac holds for the next turn show as faded messages at the end, not in a bar.
+        let shown = Set(tail.filter { $0.kind == .user }.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) })
+            .union(outgoing.map(\.text))
+        let waiting = queue.compactMap { message -> RemoteConversationItem? in
+            let text = message.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? message.preview
+            guard message.placement != .context, !shown.contains(text) else { return nil }
+            return RemoteConversationItem(id: "queued-\(message.id)", kind: .user, title: nil, text: text, time: .distantPast, state: .running)
+        }
+        items = latest + outgoing + waiting
     }
 
     func fileReferences(query: String) async throws -> [RemoteFileReferenceCandidate] {
@@ -573,7 +578,10 @@ final class RemoteConversationViewModel: ObservableObject {
         case .sessionChanged(let sessionID):
             if sessionID == session.id { await refresh(silently: true) }
         case .queueChanged(let sessionID, let items):
-            if sessionID == session.id { queue = items }
+            if sessionID == session.id {
+                queue = items
+                setItems(snapshotItems)
+            }
         case .interaction(let interaction):
             guard interaction.sessionID == session.id else { return }
             self.interaction = interaction

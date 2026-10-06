@@ -692,16 +692,6 @@ struct RemoteConversationView: View {
     }
     #endif
 
-    /// Messages waiting for the running turn to end. A message this phone just sent shows in
-    /// the conversation instead, and an idle session takes its queue at once, so neither is listed.
-    private var visibleQueue: [RemoteQueuedMessage] {
-        guard viewModel.session.running else { return [] }
-        let sent = viewModel.outgoingTexts
-        return viewModel.queue.filter { item in
-            item.placement == .queued && !sent.contains(item.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
-        }
-    }
-
     private var subagentCount: Int {
         viewModel.subagentCatalog?.entries.lazy.filter { !$0.isDiagnostic }.count ?? 0
     }
@@ -713,14 +703,6 @@ struct RemoteConversationView: View {
                goal.phase != .complete {
                 RemoteGoalStatusDock(goal: goal) {
                     selectedDetail = goalDetailItem(goal)
-                }
-                .padding(.horizontal, 8)
-                .padding(.bottom, -5)
-                .zIndex(0)
-            }
-            if !visibleQueue.isEmpty {
-                QueueDockView(queue: visibleQueue, isRunning: viewModel.session.running) { item, action in
-                    Task { await viewModel.updateQueue(item, action: action) }
                 }
                 .padding(.horizontal, 8)
                 .padding(.bottom, -5)
