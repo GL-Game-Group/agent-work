@@ -115,6 +115,8 @@ pnpm package package:desktop:mac:arm64:dir   # 未封装的 .app，用于本机�
 pnpm package package:desktop:mac:arm64       # 签名安装包
 ```
 
+本机试用（mac）：`pnpm try:desktop` 一步完成“生成构建副本 → 构建目录版（不做安装包、不公证）→ 退出正在运行的 GL Work → 打开新构建”。登录状态、隧道等设置在用户目录里，新旧两份共用。`--skip-stage` 直接用 `build/upstream` 现有内容构建（在副本里改了文件时），`--open` 只重新打开上一次的构建。测通、PR 合并后再打正式安装包。
+
 `.env.macos` / `.env.windows` 含签名凭据，已被 Git 忽略，只提交 `.example`。字段含义见上游 [apps/desktop/README.md](upstream/apps/desktop/README.md)；`DSH_DESKTOP_PRODUCT_NAME` 由 `patches/0001` 新增。
 
 ## 品牌
