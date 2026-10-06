@@ -14,7 +14,7 @@ export interface GitHubConfig {
 export interface GatewayConfig {
   /** Product name shown in the admin console. */
   productName?: string
-  /** Public origin clients reach, e.g. https://agent.glgwork.com. */
+  /** Public origin clients reach, e.g. https://agent.glwork.net. */
   publicOrigin: string
   listenHost: string
   listenPort: number

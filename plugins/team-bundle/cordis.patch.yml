@@ -25,7 +25,7 @@
       #   - id: company-account
       #     config: { serverOrigin: 'http://127.0.0.1:8787', allowLoopbackHttp: true }
       config:
-        serverOrigin: https://agent.glgwork.com
+        serverOrigin: https://agent.glwork.net
     # Applies the company's managed config (model gateway, its key) after sign-in.
     - id: company-config-sync
       name: ./config-sync.js

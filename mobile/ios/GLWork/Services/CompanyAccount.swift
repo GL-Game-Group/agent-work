@@ -33,7 +33,7 @@ enum CompanyAccountError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .invalidServer: "服务器地址要以 https:// 开头，例如 https://agent.glgwork.com"
+        case .invalidServer: "服务器地址要以 https:// 开头，例如 https://agent.glwork.net"
         case .stateMismatch: "登录请求已过期，请重新登录。"
         case .refused(let reason): reason
         case .unreachable: "暂时连不上公司服务，请检查网络后重试。"
@@ -49,7 +49,7 @@ enum CompanyAccountError: LocalizedError {
  */
 @MainActor
 final class CompanyAccount: NSObject, ObservableObject {
-    static let defaultServer = URL(string: "https://agent.glgwork.com")!
+    static let defaultServer = URL(string: "https://agent.glwork.net")!
     private static let serverKey = "glwork.server"
     private static let memberKey = "glwork.member"
     private static let tokenAccount = "phone-token"

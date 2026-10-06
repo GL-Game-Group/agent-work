@@ -42,7 +42,7 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]'])
  * @property {number} [attemptTimeoutMs] - Upper bound for one browser sign-in attempt.
  */
 export const Config = Schema.object({
-  serverOrigin: Schema.string().pattern(/^https?:\/\/[^\s/?#]+\/?$/).default('https://agent.glgwork.com').volatile(),
+  serverOrigin: Schema.string().pattern(/^https?:\/\/[^\s/?#]+\/?$/).default('https://agent.glwork.net').volatile(),
   allowLoopbackHttp: Schema.boolean().default(false),
   requestTimeoutMs: Schema.number().min(1).max(120_000).default(30_000),
   attemptTimeoutMs: Schema.number().min(1).max(3_600_000).default(600_000),
@@ -151,7 +151,7 @@ export class CompanyAccount extends DeepSeekAccount {
     // The Loader hands the validated config with live fields as refs; a bare object (tests) is validated here.
     const resolved = typeof config.serverOrigin === 'object' ? config : Config(/** @type {{ serverOrigin?: string }} */ (config))
     const origin = resolved.serverOrigin
-    this._configuredOrigin = () => (typeof origin === 'object' ? origin.get() : origin ?? 'https://agent.glgwork.com')
+    this._configuredOrigin = () => (typeof origin === 'object' ? origin.get() : origin ?? 'https://agent.glwork.net')
     this._allowLoopbackHttp = resolved.allowLoopbackHttp ?? false
     this._origin = serviceOrigin(this._configuredOrigin(), this._allowLoopbackHttp)
     this._requestTimeout = resolved.requestTimeoutMs ?? 30_000
