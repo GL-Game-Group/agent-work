@@ -4,6 +4,13 @@ import ImageIO
 import PhotosUI
 import UniformTypeIdentifiers
 
+/// Put the keyboard away whichever field holds it: the composer is a UIKit text view
+/// behind a SwiftUI focus binding, so the binding alone does not always reach it.
+@MainActor
+func dismissKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+
 private struct RemoteDraftReference: Identifiable, Hashable {
     enum Kind: Hashable {
         case file
@@ -1046,6 +1053,7 @@ struct RemoteConversationView: View {
                 shouldFollowNextSend = true
                 // Sent: put the keyboard away so the reply is in view (a failed send keeps the draft).
                 composerFocused = false
+                dismissKeyboard()
                 Task {
                     if await viewModel.send(
                         outgoing,
@@ -3404,6 +3412,7 @@ private struct RemoteSubagentConversationView: View {
                         let outgoing = draft
                         shouldFollowNextSend = true
                         composerFocused = false
+                        dismissKeyboard()
                         Task {
                             if await viewModel.send(outgoing) {
                                 draft = ""
