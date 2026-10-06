@@ -17,7 +17,7 @@ const SECRET_KEY = Buffer.alloc(32, 9).toString('base64')
 
 /** Two voices as Alibaba's voice list page has them (the escaped JSON copy). */
 function dashscopePage(voices: string[]): string {
-  const rows = voices.map(id => `<tr><td style=\\"vertical-align:top\\"><p><code>${id}</code></p></td><td><p><strong>音色名</strong>：${id}名</p><p><strong>描述</strong>：温柔（${id === 'Ethan' ? '男性' : '女性'}）</p><audio src=\\"https://help-static-aliyun-doc.aliyuncs.com/${id}.wav\\" controls=\\"\\"></audio></td><td><p>中文（普通话）、英语</p></td><td><ul><li><strong>Qwen3-TTS-Flash-Realtime</strong>：qwen3-tts-flash-realtime、qwen3-tts-flash-realtime-2025-11-27</li></ul></td></tr>`)
+  const rows = voices.map(id => `<tr><td style=\\"vertical-align:top\\"><p><code>${id}</code></p></td><td><p><strong>音色名</strong>：${id}名</p><p><strong>描述</strong>：温柔（${id === 'Ethan' ? '男性' : '女性'}）</p><audio src=\\"https://help-static-aliyun-doc.aliyuncs.com/${id}.wav\\" controls=\\"\\"></audio></td><td><p>中文（普通话）、英语</p></td><td><ul><li><strong>Qwen3-TTS-Flash-Realtime</strong>：qwen3-tts-flash-realtime、qwen3-tts-flash-realtime-2025-11-27</li><li><strong>Qwen3-TTS-Flash</strong>：qwen3-tts-flash</li></ul></td></tr>`)
   return `<script>window.__ICE_PAGE_PROPS__={"content":"<h2 id=\\"a\\">Qwen-TTS实时语音合成音色列表</h2><table><tbody>${rows.join('')}</tbody></table>"}</script>`
 }
 
@@ -65,7 +65,7 @@ describe('voice lists', () => {
     const voices = parseDashscopeVoices(dashscopePage(['Cherry', 'Ethan']))
     assert.deepEqual(voices.map(v => [v.id, v.name, v.gender]), [['Cherry', 'Cherry名', 'female'], ['Ethan', 'Ethan名', 'male']])
     assert.equal(voices[0]?.sampleUrl, 'https://help-static-aliyun-doc.aliyuncs.com/Cherry.wav')
-    assert.deepEqual(voices[0]?.models, ['qwen3-tts-flash-realtime', 'qwen3-tts-flash-realtime-2025-11-27'])
+    assert.deepEqual(voices[0]?.models, ['qwen3-tts-flash-realtime', 'qwen3-tts-flash-realtime-2025-11-27', 'qwen3-tts-flash'])
     assert.equal(voices[0]?.family, 'Qwen-TTS实时语音合成音色列表')
   })
 

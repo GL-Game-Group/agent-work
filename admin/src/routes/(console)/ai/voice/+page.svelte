@@ -90,14 +90,14 @@
 							<div><Label for="asr-{v.id}">语音输入</Label><p class="text-muted-foreground text-xs">按住说话时实时识别成文字</p></div>
 							<Switch id="asr-{v.id}" name="asr" checked={s.asr} />
 						</div>
-						<Field label="识别模型" id="asrm-{v.id}" hint={v.protocol === 'dashscope' ? '实时识别模型，如 qwen3-asr-flash-realtime' : '流式识别的资源 ID，如 volc.bigasr.sauc.duration'}>
+						<Field label="识别模型" id="asrm-{v.id}" hint={v.protocol === 'dashscope' ? '实时识别模型，如 qwen3-asr-flash-realtime' : '流式识别的资源 ID，如 volc.seedasr.sauc.duration'}>
 							<Input id="asrm-{v.id}" name="asrModel" value={s.asrModel} class="font-mono" />
 						</Field>
 						<div class="flex items-center justify-between gap-4">
 							<div><Label for="tts-{v.id}">播报</Label><p class="text-muted-foreground text-xs">Agent 回复完成后朗读，成员在手机上选音色</p></div>
 							<Switch id="tts-{v.id}" name="tts" checked={s.tts} />
 						</div>
-						<Field label="合成模型" id="ttsm-{v.id}" hint={v.protocol === 'dashscope' ? '如 qwen3-tts-flash-realtime；手机只列出这个模型支持的音色' : 'seed-tts-2.0 或 seed-tts-1.0；手机只列出对应系列的音色'}>
+						<Field label="合成模型" id="ttsm-{v.id}" hint={v.protocol === 'dashscope' ? '如 qwen3-tts-flash；手机只列出这个模型支持的音色' : 'seed-tts-2.0 或 seed-tts-1.0；手机只列出对应系列的音色'}>
 							<Input id="ttsm-{v.id}" name="ttsModel" value={s.ttsModel} class="font-mono" />
 						</Field>
 						<div class="flex justify-end"><Button type="submit" size="sm">保存</Button></div>

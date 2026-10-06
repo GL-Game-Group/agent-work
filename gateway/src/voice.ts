@@ -43,8 +43,9 @@ export interface VoiceSettings {
 
 /** The models each vendor starts with; administrators change them under 语音. */
 const DEFAULT_MODELS: Record<string, { asrModel: string; ttsModel: string }> = {
-  dashscope: { asrModel: 'qwen3-asr-flash-realtime', ttsModel: 'qwen3-tts-flash-realtime' },
-  volcengine: { asrModel: 'volc.bigasr.sauc.duration', ttsModel: 'seed-tts-2.0' },
+  // Read-aloud over HTTP (multimodal-generation, up to 600 characters a request); recognition realtime.
+  dashscope: { asrModel: 'qwen3-asr-flash-realtime', ttsModel: 'qwen3-tts-flash' },
+  volcengine: { asrModel: 'volc.seedasr.sauc.duration', ttsModel: 'seed-tts-2.0' },
 }
 const DEFAULTS = { tokenTtlSeconds: 600, tokensPerHour: 60 }
 
