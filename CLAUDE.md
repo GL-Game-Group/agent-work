@@ -110,6 +110,7 @@
 - Host 的路由（`connection.fetch.register`）按路径区分，不按方法：同一路径的 GET 和 POST 会冲突，要用不同的路径。
 - 新增的本地文件必须写进插件 `package.json` 的 `files`，否则 `dsh plugin add` 装进去的包里没有它，Host 报 "failed to import"。
 - 插件替换单占位（如 `sidebar.workspaces.directoryFlow`）时要用 `priority: -1`，同优先级会抛错导致整个插件激活失败，桌面端随之退出。
+- 测试给 `dsh web` 传 `HOME` 没用：插件里的 `os.homedir()` 仍是开发者真实的用户目录。插件要扫描用户目录的，给一个配置项（如工作区插件的 `searchRoots`），测试里用它指向临时目录。
 - 启动子进程（安装脚本、命令行）时显式传 `HOME`：Host 的子进程不一定继承 Host 看到的 HOME。
 - dsh 0.2 改了几个手机远程用到的宿主接口：`typertGateway.wireStream.open` 要传 `(endpoint, payload, uplink, peer, signal)` 五个参数，少传时信号落到 uplink 上，`$events` 一打开就失败；`session/control` 不再有队列帧，排队消息在 `inbox` 投影里；`subagents/list` 不再是远程方法，子代理列表在父会话的 `subagentCatalog` 投影里。
 - Host 读取的是启动时的环境变量快照，运行中修改 `process.env` 不会生效。要给 Host 提供 Key，就写进凭据存储（`ctx.credentials.set`）。

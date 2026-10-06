@@ -147,6 +147,7 @@ window.__ModuleLoader__.load({
 			const [mode, setMode] = React.useState('clone')
 			const [name, setName] = React.useState('')
 			const [branch, setBranch] = React.useState('')
+			const [mainRoot, setMainRoot] = React.useState(null)
 			const [job, setJob] = React.useState(null)
 			const [error, setError] = React.useState(null)
 			React.useEffect(() => {
@@ -166,14 +167,14 @@ window.__ModuleLoader__.load({
 				call('plan', { repo }).then((p) => {
 					setPlan(p)
 					setMode(p.mode)
+					setMainRoot(p.existing[0]?.mainRoot ?? null)
 					setName(p.name)
 					setBranch(p.branch)
 				}, e => setError(e.message))
 			}
 			const start = () => {
 				setError(null)
-				const existing = plan.existing[0]
-				call('create', { repo: plan.repo, mode, name, branch, ...existing ? { mainRoot: existing.mainRoot } : {} }).then(setJob, e => setError(e.message))
+				call('create', { repo: plan.repo, mode, name, branch, ...mainRoot ? { mainRoot } : {} }).then(setJob, e => setError(e.message))
 			}
 			if (!ready) return h('div', { style: stack }, h('div', { style: muted }, '从 GitHub 克隆需要先安装 GitHub CLI 并登录：'), h(ToolsPanel, { state, compact: true }))
 			if (job !== null) {
@@ -187,21 +188,29 @@ window.__ModuleLoader__.load({
 						job.state === 'failed' || job.state === 'cancelled' ? h(ui.Button, { onClick: () => setJob(null) }, '返回') : null))
 			}
 			if (plan !== null) {
-				const existing = plan.existing[0]
+				const existing = plan.existing.find(e => e.mainRoot === mainRoot) ?? plan.existing[0]
 				return h('div', { style: stack, 'data-agent-work': 'plan' },
 					h('div', { style: row }, h('strong', null, plan.repo), h(ui.Button, { size: 'sm', variant: 'ghost', onClick: () => setPlan(null) }, '换一个')),
+					existing ? h('div', { style: muted }, plan.existing.length > 1 ? `本机已经有 ${plan.existing.length} 份这个仓库，选一份：` : `本机已经有这个仓库：${existing.mainRoot}`) : null,
+					plan.existing.length > 1 ? h('select', {
+						value: existing.mainRoot, onChange: e => setMainRoot(e.target.value), 'aria-label': '本机的仓库', 'data-agent-work': 'clones',
+						style: { height: '34px', borderRadius: '8px', padding: '0 8px', border: '1px solid var(--dsw-alias-border-default, rgba(127,127,127,.3))', background: 'transparent', color: 'inherit', maxWidth: '100%' },
+					}, plan.existing.map(e => h('option', { key: e.mainRoot, value: e.mainRoot }, e.mainRoot))) : null,
 					existing ? h('div', { style: row },
-						h(ui.Pill, { active: mode === 'worktree', onClick: () => setMode('worktree') }, '创建为工作树（推荐）'),
-						h(ui.Pill, { active: mode === 'clone', onClick: () => setMode('clone'), disabled: plan.cloneTargetExists }, '独立克隆')) : null,
+						h(ui.Pill, { active: mode === 'worktree', onClick: () => setMode('worktree') }, '基于已有仓库新建工作树（推荐）'),
+						h(ui.Pill, { active: mode === 'open', onClick: () => setMode('open') }, '直接打开已有仓库'),
+						h(ui.Pill, { active: mode === 'clone', onClick: () => setMode('clone'), disabled: plan.cloneTargetExists }, '重新克隆（不推荐）')) : null,
+					mode === 'open' && existing ? h('div', { style: muted }, `直接在 ${existing.mainRoot} 里工作。它和你在别处打开的是同一份代码，没提交的改动会互相影响。`) : null,
+					mode === 'clone' && existing ? h('div', { style: muted }, '会再下载一份完整的仓库，占用双倍空间，两份之间的分支和改动不共享。') : null,
 					mode === 'worktree' && existing ? h('div', { style: stack },
-						h('div', { style: muted }, `本地已有这个仓库：${existing.mainRoot}。工作树和它共用 git 数据，从远端默认分支新建一个分支。`),
+						h('div', { style: muted }, '工作树和这份仓库共用 git 数据，从远端默认分支新建一个分支，互不影响各自没提交的改动。'),
 						h('div', { style: row },
 							field('工作区名字', h(ui.Input, { value: name, onChange: e => { setName(e.target.value); setBranch(branchFor(state.tools.gh.login, e.target.value)) }, 'aria-label': '工作区名字', style: { width: '180px' } })),
-							field('新分支', h(ui.Input, { value: branch, onChange: e => setBranch(e.target.value), 'aria-label': '分支', style: { width: '220px' } })))) : h('div', { style: muted }, '克隆到 ', h('code', { style: mono }, plan.cloneTarget)),
+							field('新分支', h(ui.Input, { value: branch, onChange: e => setBranch(e.target.value), 'aria-label': '分支', style: { width: '220px' } })))) : mode === 'clone' ? h('div', { style: muted }, '克隆到 ', h('code', { style: mono }, plan.cloneTarget)) : null,
 					plan.cloneTargetExists && mode === 'clone' ? h('div', { style: danger }, '这个位置已经有文件夹了') : null,
 					error ? h('div', { style: danger }, error) : null,
 					h('div', { style: { ...row, justifyContent: 'flex-end' } },
-						h(ui.Button, { variant: 'primary', 'data-action': 'start', disabled: mode === 'clone' && plan.cloneTargetExists, onClick: start }, mode === 'worktree' ? '创建工作树' : '开始克隆')))
+						h(ui.Button, { variant: 'primary', 'data-action': 'start', disabled: mode === 'clone' && plan.cloneTargetExists, onClick: start }, mode === 'worktree' ? '创建工作树' : mode === 'open' ? '打开' : '开始克隆')))
 			}
 			const q = query.trim().toLowerCase()
 			const shown = (repos ?? []).filter(r => q === '' || r.repo.toLowerCase().includes(q) || (r.description ?? '').toLowerCase().includes(q))

@@ -17,10 +17,10 @@
 import Schema from '@deepseek-ai/schemastery'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { NAME, branchFor, cloneProgress, deviceCode, refusesInit, repoIdentity, validBranch, worktreeDir } from './git.js'
+import { NAME, SEARCH_DEPTH, SEARCH_ROOTS, branchFor, cloneProgress, deviceCode, originOfConfig, refusesInit, repoIdentity, skipsDir, validBranch, worktreeDir } from './git.js'
 
 /** @typedef {import('@deepseek-ai/cordis').Context} Context */
 /**
@@ -70,6 +70,11 @@ export const Config = Schema.object({
   root: Schema.string().default('~/GLWork'),
   /** gh to run instead of the system's or the installed one (development, tests). */
   ghPath: Schema.string(),
+  /**
+   * Folders searched for clones made outside GL Work (besides `root`); `~` is the
+   * member's home. Unset: the usual code folders in the home directory (git.js SEARCH_ROOTS).
+   */
+  searchRoots: Schema.array(Schema.string()),
 })
 
 const ROUTE = '/api/agent-work/workspace'
@@ -89,7 +94,7 @@ class Refusal extends Error {
 
 /**
  * @param {Context} ctx
- * @param {{ org: string, root: string, ghPath?: string }} config
+ * @param {{ org: string, root: string, ghPath?: string, searchRoots?: string[] }} config
  */
 export function apply(ctx, config) {
   const subprocess = /** @type {Subprocess} */ (/** @type {unknown} */ (ctx.get('subprocess')))
@@ -286,9 +291,61 @@ export function apply(ctx, config) {
     return path
   }
 
-  /** Local repositories of one GitHub repository: workspaces, and the clone target, by origin. @param {string} identity @param {string} cloneTarget */
+  /**
+   * Clones on this machine by repository identity, found under the usual code folders
+   * (SEARCH_ROOTS, GL Work's clone root first), including clones made outside GL Work.
+   * A directory with a `.git` folder is a repository (not searched further); worktrees
+   * (a `.git` file) belong to theirs. Kept a few minutes: the walk reads many folders.
+   * @type {{ at: number, clones: Map<string, string[]> } | null}
+   */
+  let cloneIndex = null
+  /** @type {Promise<Map<string, string[]>> | null} */
+  let indexing = null
+  const CLONE_INDEX_MS = 5 * 60_000
+  /** Bound on folders read per walk, so an enormous Documents folder cannot stall the page. */
+  const MAX_FOLDERS = 20_000
+  /** @param {{ fresh?: boolean }} [options] - fresh: walk again now (a member picking a repository). */
+  function localClones({ fresh = false } = {}) {
+    if (!fresh && cloneIndex !== null && Date.now() - cloneIndex.at < CLONE_INDEX_MS) return Promise.resolve(cloneIndex.clones)
+    indexing ??= (async () => {
+      /** @type {Map<string, string[]>} */
+      const clones = new Map()
+      const seen = new Set()
+      let budget = MAX_FOLDERS
+      /** @param {string} dir @param {number} depth */
+      const walk = async (dir, depth) => {
+        if (budget <= 0 || seen.has(dir)) return
+        seen.add(dir)
+        budget -= 1
+        const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+        const dotGit = entries.find(e => e.name === '.git')
+        if (dotGit !== undefined) {
+          if (dotGit.isDirectory()) {
+            const identity = originOfConfig(await readFile(join(dir, '.git', 'config'), 'utf8').catch(() => ''))
+            if (identity !== undefined) clones.set(identity, [...clones.get(identity) ?? [], dir])
+          }
+          return
+        }
+        if (depth >= SEARCH_DEPTH) return
+        for (const entry of entries) if (entry.isDirectory() && !skipsDir(entry.name)) await walk(join(dir, entry.name), depth + 1)
+      }
+      const roots = config.searchRoots?.length ? config.searchRoots.map(r => resolve(r.replace(/^~(?=$|[\\/])/u, home))) : SEARCH_ROOTS.map(r => join(home, r))
+      for (const name of [root, ...roots]) {
+        if (existsSync(name)) await walk(await realpath(name).catch(() => name), 0)
+      }
+      cloneIndex = { at: Date.now(), clones }
+      return clones
+    })().finally(() => { indexing = null })
+    return indexing
+  }
+
+  /**
+   * Local repositories of one GitHub repository: workspaces, the clone target, and
+   * clones found elsewhere on this machine, by origin.
+   * @param {string} identity @param {string} cloneTarget
+   */
   async function sameRepository(identity, cloneTarget) {
-    const candidates = new Set([...registry.list().map(w => w.path), cloneTarget])
+    const candidates = new Set([...registry.list().map(w => w.path), cloneTarget, ...(await localClones({ fresh: true })).get(identity) ?? []])
     /** @type {Map<string, { mainRoot: string, workspaces: string[] }>} */
     const found = new Map()
     for (const path of candidates) {
@@ -320,6 +377,7 @@ export function apply(ctx, config) {
     return {
       repo, cloneTarget, cloneTargetExists: existsSync(cloneTarget),
       existing: existing.map(e => ({ mainRoot: e.mainRoot, workspaces: e.workspaces })),
+      // With a clone here already, a worktree is recommended; a second clone is the last resort.
       mode: existing.length > 0 ? 'worktree' : 'clone',
       name: suggested, branch: branchFor(account, suggested),
     }
@@ -366,6 +424,12 @@ export function apply(ctx, config) {
     if (!/^[\w.-]+\/[\w.-]+$/u.test(repo)) throw new Refusal('仓库不正确', 400)
     return startJob(async (job) => {
       const signal = job.controller.signal
+      // 直接打开已有仓库: the existing clone itself becomes the workspace.
+      if (body.mode === 'open') {
+        const facts = await info(typeof body.mainRoot === 'string' ? body.mainRoot : '')
+        if (facts.origin !== `github.com/${repo}`.toLowerCase() || facts.root === null) throw new Refusal('本地仓库和所选仓库不一致')
+        return facts.root
+      }
       if (body.mode === 'worktree') {
         const mainRoot = typeof body.mainRoot === 'string' ? body.mainRoot : ''
         const facts = await info(mainRoot)
@@ -446,7 +510,11 @@ export function apply(ctx, config) {
     const result = ok(await gh(['repo', 'list', config.org, '--limit', '1000', '--json', 'nameWithOwner,description,isPrivate,updatedAt,defaultBranchRef']), '读取仓库列表')
     /** @type {{ nameWithOwner: string, description: string | null, isPrivate: boolean, updatedAt: string, defaultBranchRef: { name: string } | null }[]} */
     const list = JSON.parse(result.stdout)
-    return list.map(r => ({ repo: r.nameWithOwner, description: r.description || null, private: r.isPrivate, updatedAt: r.updatedAt, defaultBranch: r.defaultBranchRef?.name ?? null, local: existsSync(cloneTargetOf(r.nameWithOwner)) }))
+    const clones = await localClones()
+    return list.map(r => ({
+      repo: r.nameWithOwner, description: r.description || null, private: r.isPrivate, updatedAt: r.updatedAt, defaultBranch: r.defaultBranchRef?.name ?? null,
+      local: existsSync(cloneTargetOf(r.nameWithOwner)) || clones.has(`github.com/${r.nameWithOwner}`.toLowerCase()),
+    }))
       .toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
