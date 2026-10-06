@@ -91,6 +91,33 @@ esac`)
     assert.equal(clis.find(c => c.id === 'claude').signIn.state, 'done')
   })
 
+  it('lists only the CLIs found on this machine as models, and adds one once it appears', async () => {
+    const catalog = async () => {
+      const response = await fetch(`${origin}/api/session/modelCatalog`, {
+        method: 'POST', headers: { cookie, origin, 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: 'session/modelCatalog', payload: { args: {} } }),
+      })
+      const envelope = await response.json()
+      assert.equal(envelope.result?.ok, true, JSON.stringify(envelope))
+      return envelope.result.value.groups.map(g => g.id).filter(id => /-(code|cli)$/u.test(id)).sort()
+    }
+    let ids = []
+    for (let i = 0; i < 50 && ids.length === 0; i += 1) { ids = await catalog(); if (ids.length === 0) await new Promise(r => setTimeout(r, 100)) }
+    assert.deepEqual(ids, ['claude-code', 'codex-cli'], 'qoder is not installed here')
+    // Qoder appears (as after an install); reading the CLI list re-checks.
+    const bin = join(base, 'bin')
+    writeFileSync(join(bin, 'missing-qodercli'), '#!/bin/sh\necho 1.1.65\n')
+    chmodSync(join(bin, 'missing-qodercli'), 0o755)
+    await api('clis')
+    for (let i = 0; i < 50 && !ids.includes('qoder-cli'); i += 1) { ids = await catalog(); if (!ids.includes('qoder-cli')) await new Promise(r => setTimeout(r, 100)) }
+    assert.deepEqual(ids, ['claude-code', 'codex-cli', 'qoder-cli'])
+    // Gone again (uninstalled): out of the list, and the next case sees no Qoder.
+    rmSync(join(bin, 'missing-qodercli'))
+    await api('clis')
+    for (let i = 0; i < 50 && ids.includes('qoder-cli'); i += 1) { ids = await catalog(); if (ids.includes('qoder-cli')) await new Promise(r => setTimeout(r, 100)) }
+    assert.deepEqual(ids, ['claude-code', 'codex-cli'])
+  })
+
   it('refuses what it does not know', async () => {
     assert.equal((await api('install', { id: 'cursor' }, 400)).error, '不认识的命令行')
     assert.equal((await api('login', { id: 'qoder' }, 409)).error, '还没有安装 Qoder CLI')
