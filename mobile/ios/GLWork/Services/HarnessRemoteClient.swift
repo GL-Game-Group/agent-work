@@ -26,6 +26,8 @@ protocol HarnessRemoteClient: Sendable {
     func interruptSubagent(parentSessionID: String, child: RemoteSubagentEntry) async throws
     func models(sessionID: String) async throws -> RemoteModelDirectory
     func agentPresets() async throws -> [RemoteAgentPreset]
+    /// Run a session in another mode; the Mac allows it only before the session's first message.
+    func selectAgentPreset(sessionID: String, preset: String) async throws -> String
     func selectModel(sessionID: String, selection: RemoteModelSelection) async throws -> RemoteModelSelection
     func send(
         _ text: String,
@@ -278,6 +280,10 @@ struct LiveHarnessRemoteClient: HarnessRemoteClient {
     func agentPresets() async throws -> [RemoteAgentPreset] {
         let response: AgentPresetRosterWire = try await call("agentPresets/list", payload: EmptyPayload())
         return response.presets.map { RemoteAgentPreset(id: $0.id, name: $0.name ?? $0.id) }
+    }
+
+    func selectAgentPreset(sessionID: String, preset: String) async throws -> String {
+        try await call("agentPresets/select", payload: AgentPresetSelectPayload(args: .init(agentId: sessionID, agentPreset: preset)))
     }
 
     func models(sessionID: String) async throws -> RemoteModelDirectory {
@@ -1034,6 +1040,8 @@ actor DemoHarnessRemoteClient: HarnessRemoteClient {
         [RemoteAgentPreset(id: "default", name: "默认"), RemoteAgentPreset(id: "direct", name: "直连模式")]
     }
 
+    func selectAgentPreset(sessionID: String, preset: String) async throws -> String { preset }
+
     func models(sessionID: String) async throws -> RemoteModelDirectory {
         RemoteModelDirectory(
             current: selectedModel,
@@ -1633,6 +1641,11 @@ private struct SessionSummaryWire: Decodable {
     let cwd: String?
     let projections: SessionProjectionsWire?
 }
+private struct AgentPresetSelectPayload: Encodable {
+    struct Args: Encodable { let agentId: String; let agentPreset: String }
+    let args: Args
+}
+
 private struct AgentPresetRosterWire: Decodable {
     struct Row: Decodable { let id: String; let name: String? }
     let presets: [Row]

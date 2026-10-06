@@ -13,6 +13,11 @@ struct DraftTextFile: Identifiable, Hashable {
 struct ConversationSettingsSheet: View {
     let modelName: String
     let presetName: String?
+    let presets: [RemoteAgentPreset]
+    let currentPreset: String?
+    /// Only before the session's first message.
+    let canChangePreset: Bool
+    let selectPreset: (String) -> Void
     let subagentCount: Int
     @ObservedObject var speaker: ReplySpeaker
     let pickModel: () -> Void
@@ -27,9 +32,7 @@ struct ConversationSettingsSheet: View {
                         Button(action: pickModel) {
                             row("对话模型", value: modelName, icon: "cpu", chevron: true)
                         }
-                        if let presetName {
-                            row("当前模式", value: presetName, icon: "square.stack.3d.up", chevron: false)
-                        }
+                        modeRow
                         Button(action: openSubagents) {
                             row("子代理", value: subagentCount > 0 ? remoteLocalizedCount(subagentCount, unit: "subagent") : remoteLocalized("暂无"), icon: "person.2", chevron: true)
                         }
@@ -57,6 +60,36 @@ struct ConversationSettingsSheet: View {
                 .buttonStyle(RemotePressableRowButtonStyle(cornerRadius: 10))
                 .padding(.horizontal, RemoteTheme.pagePadding)
                 .padding(.bottom, 24)
+            }
+        }
+    }
+
+    /// The mode: a menu of the Mac's modes while the session has no message yet.
+    @ViewBuilder
+    private var modeRow: some View {
+        if canChangePreset {
+            Menu {
+                ForEach(presets, id: \.id) { preset in
+                    Button {
+                        selectPreset(preset.id)
+                    } label: {
+                        if preset.id == currentPreset {
+                            Label(preset.name, systemImage: "checkmark")
+                        } else {
+                            Text(preset.name)
+                        }
+                    }
+                }
+            } label: {
+                row("对话模式", value: presetName ?? remoteLocalized("默认"), icon: "square.stack.3d.up", chevron: true)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                row("对话模式", value: presetName ?? remoteLocalized("默认"), icon: "square.stack.3d.up", chevron: false)
+                Text("会话开始后不能再换模式；新建会话后、发第一条消息前在这里选择。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 8)
             }
         }
     }

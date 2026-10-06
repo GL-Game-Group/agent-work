@@ -371,6 +371,15 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     // The modes the phone names sessions' modes with.
     const { presets } = await remoteRpc('agentPresets/list')
     assert.ok(presets.some(p => p.isDefault), JSON.stringify(presets))
+    // Picking a mode: a new session takes it before its first message; a started one keeps its own.
+    const other = presets.find(p => !p.isDefault) ?? presets[0]
+    const blank = (await remoteRpc('session.create', { cwd: home })).sessionId
+    assert.equal(await remoteRpc('agentPresets/select', { args: { agentId: blank, agentPreset: other.id } }), other.id)
+    const refused = await (await fetch(`${gatewayOrigin}/agent-work/remote/${hosts[0].id}/api/agentPresets/select`, {
+      method: 'POST', headers: { ...asPhone, 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'client-request', method: 'agentPresets/select', rpcId: crypto.randomUUID(), payload: { args: { agentId: sessionId, agentPreset: other.id } } }),
+    })).json()
+    assert.equal(refused.result?.ok, false, JSON.stringify(refused))
     // @-mentions in the phone's composer.
     assert.ok(Array.isArray(await remoteRpc('fileReferences/list', { args: { agentId: sessionId, query: '' } })))
     assert.ok(Array.isArray(await remoteRpc('sessionReferenceResolver/candidates', { args: { agentId: sessionId, query: '' } })))

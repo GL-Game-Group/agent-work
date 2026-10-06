@@ -173,6 +173,8 @@ final class RemoteConversationViewModel: ObservableObject {
     /// The session's mode (agent preset id) and the Mac's names for the modes.
     @Published private(set) var agentPreset: String?
     @Published private(set) var agentPresetNames: [String: String] = [:]
+    @Published private(set) var agentPresets: [RemoteAgentPreset] = []
+    @Published private(set) var isSelectingAgentPreset = false
     @Published private(set) var fileReferencesSupported: Bool?
     @Published private(set) var sessionReferencesSupported: Bool?
     @Published private(set) var subagentCatalog: RemoteSubagentCatalog?
@@ -235,9 +237,26 @@ final class RemoteConversationViewModel: ObservableObject {
         return agentPresetNames[id] ?? ["default": remoteLocalized("默认"), "standard": remoteLocalized("标准模式"), "direct": remoteLocalized("直连模式")][id] ?? id
     }
 
+    /// The Mac lets a session change its mode only before its first message.
+    var canChangeAgentPreset: Bool {
+        items.isEmpty && !session.running && !agentPresets.isEmpty
+    }
+
+    func selectAgentPreset(_ id: String) async {
+        guard canChangeAgentPreset, !isSelectingAgentPreset, id != agentPreset else { return }
+        isSelectingAgentPreset = true
+        defer { isSelectingAgentPreset = false }
+        do {
+            agentPreset = try await client.selectAgentPreset(sessionID: session.id, preset: id)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func loadAgentPresetNames() async {
         // Older GL Work on the Mac does not offer the list; the known names stand in.
         guard let presets = try? await client.agentPresets() else { return }
+        agentPresets = presets
         agentPresetNames = Dictionary(presets.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 

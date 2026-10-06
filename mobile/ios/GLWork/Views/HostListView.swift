@@ -6,6 +6,7 @@ struct HostListView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @State private var showsAbout = false
+    @AppStorage(RemoteAppearance.key) private var appearance = RemoteAppearance.system.rawValue
     @State private var confirmsSignOut = false
     @State private var unreachableHint: CompanyHost?
 
@@ -92,6 +93,14 @@ struct HostListView: View {
             }
             Spacer(minLength: 8)
             Menu {
+                Picker(selection: $appearance) {
+                    ForEach(RemoteAppearance.allCases) { option in
+                        Text(option.title).tag(option.rawValue)
+                    }
+                } label: {
+                    Label("外观", systemImage: "circle.lefthalf.filled")
+                }
+                .pickerStyle(.menu)
                 if let member = account.member {
                     Section("\(member.name)（\(member.member)）") {
                         Button("关于 GL Work", systemImage: "info.circle") { showsAbout = true }

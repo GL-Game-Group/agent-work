@@ -365,6 +365,11 @@ struct RemoteSheetHeader<Trailing: View>: View {
                         trailing
                     }
                 }
+            } else if Trailing.self == EmptyView.self {
+                // Title in the middle, close button at the right.
+                titleBlock
+                    .padding(.horizontal, 48)
+                    .overlay(alignment: .trailing) { closeButton }
             } else {
                 HStack(spacing: 10) {
                     titleBlock
@@ -383,8 +388,12 @@ struct RemoteSheetHeader<Trailing: View>: View {
         }
     }
 
+    private var centersTitle: Bool {
+        Trailing.self == EmptyView.self && !dynamicTypeSize.isAccessibilitySize
+    }
+
     private var titleBlock: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: centersTitle ? .center : .leading, spacing: 2) {
             Text(remoteLocalized(title))
                 .font(.title3.weight(.semibold))
             if let subtitle, !subtitle.isEmpty {
@@ -394,7 +403,8 @@ struct RemoteSheetHeader<Trailing: View>: View {
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? 4 : 2)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .multilineTextAlignment(centersTitle ? .center : .leading)
+        .frame(maxWidth: .infinity, alignment: centersTitle ? .center : .leading)
         .layoutPriority(1)
     }
 

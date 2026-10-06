@@ -502,6 +502,10 @@ struct RemoteConversationView: View {
             ConversationSettingsSheet(
                 modelName: modelTriggerName,
                 presetName: viewModel.agentPresetName,
+                presets: viewModel.agentPresets,
+                currentPreset: viewModel.agentPreset,
+                canChangePreset: viewModel.canChangeAgentPreset && !viewModel.isSelectingAgentPreset,
+                selectPreset: { id in Task { await viewModel.selectAgentPreset(id) } },
                 subagentCount: subagentCount,
                 speaker: speaker,
                 pickModel: { afterSheet { showsModelPicker = true } },
@@ -933,9 +937,21 @@ struct RemoteConversationView: View {
             .accessibilityLabel("返回")
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(viewModel.session.title)
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(viewModel.session.title)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let mode = viewModel.agentPresetName {
+                        Text(mode)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(RemoteTheme.mutedSurface, in: RoundedRectangle(cornerRadius: 4))
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                }
                 Text(headerSubtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -965,9 +981,9 @@ struct RemoteConversationView: View {
         .padding(.vertical, 2)
     }
 
-    /// 工作区 · 模式 · 模型
+    /// 工作区 · 模型 (the mode is the tag after the title)
     private var headerSubtitle: String {
-        [viewModel.session.projectName, viewModel.agentPresetName, modelTriggerName]
+        [viewModel.session.projectName, modelTriggerName]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
@@ -1058,8 +1074,8 @@ struct RemoteConversationView: View {
             composerFocused = false
             dismissKeyboard()
         } else {
+            // Back to the keyboard input; the keyboard itself comes up when the member taps the box.
             inputMode = .keyboard
-            composerFocused = true
         }
     }
 
