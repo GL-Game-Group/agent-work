@@ -21,7 +21,7 @@
 | 8 | AI 命令行工具：检测、安装、登录 Claude Code、Codex、Qoder CLI（需要服务地区合规）；直连模式（命令行作为模型，全部权限） | `plugins/agents` | 已完成（真实 Claude Code、Codex 对话和提问卡片已验证；Qoder 没有账号未实测） |
 | 9 | 管理后台第二版：用量限额、订阅席位 | `gateway/` | |
 | 10 | 由 AI 管理 Dokploy 部署 | — | 单独出方案 |
-| 11 | 手机端（iOS 原生，参考 DSHRemote，MIT）：R1 Mac 端手机远程 + 公司服务中转和手机登录；R2 iOS App（GL Work 品牌、GitHub 登录、TestFlight）；R3 推送 | `plugins/tunnel`、`gateway/`、`mobile/ios` | R1 已完成（真实 Host + frps/frpc 端到端验证）；R2 App 已完成（模拟器经本机中转连上真实 Host 验证），GitHub 登录弹窗待真机验收，TestFlight 待上线后上传；R3 未开始 |
+| 11 | 手机端（iOS 原生，参考 DSHRemote，MIT）：R1 Mac 端手机远程 + 公司服务中转和手机登录；R2 iOS App（GL Work 品牌、GitHub 登录、TestFlight）；R3 推送 | `plugins/tunnel`、`gateway/`、`mobile/ios` | R1 已完成（真实 Host + frps/frpc 端到端验证）；R2 App 已完成（模拟器经本机中转连上真实 Host 验证），GitHub 登录弹窗待真机验收，TestFlight 待上线后上传；R3 未开始；语音（千问、火山直连，临时令牌）：公司服务和后台已完成，手机端播报、识别进行中 |
 
 上游 DeepSeek Harness 在 `upstream/`（submodule，只读）。修改补丁或编写 Host 插件之前，先读 [upstream/CLAUDE.md](upstream/CLAUDE.md) 和相关包的 README。
 

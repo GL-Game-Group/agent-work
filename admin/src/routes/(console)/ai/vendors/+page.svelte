@@ -82,7 +82,7 @@
 					<span class="text-muted-foreground font-mono text-xs font-normal">{v.id}</span>
 				</Card.Title>
 				<Card.Description class="flex flex-wrap gap-1.5 pt-1">
-					<Badge variant="secondary">{v.type === 'api' ? 'API' : 'CLI'}</Badge>
+					<Badge variant="secondary">{v.type === 'api' ? 'API' : v.type === 'voice' ? '语音' : 'CLI'}</Badge>
 					<Badge variant="outline">{v.auth === 'key' ? 'API Key' : '订阅账号'}</Badge>
 					{#if v.builtin}<Badge variant="outline" class="text-muted-foreground">内置</Badge>{/if}
 					{#if v.waiting > 0}<Badge variant="outline" class="border-amber-500/50 text-amber-600">{v.waiting} 人待分配</Badge>{/if}
@@ -90,7 +90,13 @@
 				<Card.Action><Button variant="ghost" size="icon-sm" onclick={() => startEdit(v)} aria-label="编辑"><Pencil /></Button></Card.Action>
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm">
-				{#if v.auth === 'key'}
+				{#if v.type === 'voice'}
+					<div class="text-muted-foreground">手机端的语音输入和播报直接连 {v.name}；成员的 Key 只在公司服务里，手机拿到的是几分钟就过期的临时令牌。</div>
+					<div class="grid grid-cols-2 gap-2 rounded-md border p-2 text-center">
+						<div><div class="font-semibold tabular-nums">{v.activeKeys}</div><div class="text-muted-foreground text-xs">可用 Key</div></div>
+						<div><div class="font-semibold tabular-nums">{v.members}</div><div class="text-muted-foreground text-xs">成员</div></div>
+					</div>
+				{:else if v.auth === 'key'}
 					<div class="text-muted-foreground space-y-1">
 						<div>{v.protocol ? PROTOCOL_LABEL[v.protocol] : ''}</div>
 						<div class="truncate font-mono text-xs" title={v.baseUrl}>{v.baseUrl}</div>
@@ -117,7 +123,10 @@
 				{/if}
 			</Card.Content>
 			<Card.Footer class="gap-2">
-				{#if v.auth === 'key'}
+				{#if v.type === 'voice'}
+					<Button variant="outline" size="sm" href="/ai/voice">语音设置</Button>
+					<Button variant="ghost" size="sm" href="/ai/keys">Key 管理</Button>
+				{:else if v.auth === 'key'}
 					<Button variant="outline" size="sm" onclick={() => openModels(v)}><ListChecks />选择模型</Button>
 					<Button variant="ghost" size="sm" href="/ai/keys">Key 管理</Button>
 					<span class="text-muted-foreground ml-auto text-xs">{tokens(v.tokens30d)} / 30 天</span>
@@ -141,14 +150,18 @@
 				<Field label="标识" id="v-id" hint="网关地址里的 /llm/<标识>">
 					<Input id="v-id" name="id" bind:value={form.id} placeholder="moonshot" readonly={!!editing} class="font-mono" required />
 				</Field>
-				<Field label="类型"><Choice bind:value={form.type} options={[{ value: 'api', label: 'API（桌面端和工具调用）' }, { value: 'cli', label: 'CLI（命令行工具）' }]} /></Field>
+				{#if form.type === 'voice'}
+					<Field label="类型"><Input value="语音（内置）" disabled /></Field>
+				{:else}
+					<Field label="类型"><Choice bind:value={form.type} options={[{ value: 'api', label: 'API（桌面端和工具调用）' }, { value: 'cli', label: 'CLI（命令行工具）' }]} /></Field>
+				{/if}
 				<Field label="登录方式">
 					{#if editing}<Input value={form.auth === 'key' ? 'API Key' : '订阅账号'} disabled />
 					{:else}<Choice bind:value={form.auth} options={[{ value: 'key', label: 'API Key' }, { value: 'account', label: '订阅账号（成员自己登录）' }]} />{/if}
 				</Field>
 				<input type="hidden" name="type" value={form.type} />
 				<input type="hidden" name="auth" value={form.auth} />
-				{#if form.auth === 'key'}
+				{#if form.auth === 'key' && form.type !== 'voice'}
 					<Field label="接口协议" class="sm:col-span-2"><Choice bind:value={form.protocol} options={[{ value: 'openai', label: 'OpenAI 兼容' }, { value: 'anthropic', label: 'Anthropic Messages' }]} /></Field>
 					<input type="hidden" name="protocol" value={form.protocol} />
 					<Field label="接口地址" id="v-url" class="sm:col-span-2"><Input id="v-url" name="baseUrl" bind:value={form.baseUrl} placeholder="https://api.moonshot.cn/v1" class="font-mono" required /></Field>
@@ -159,7 +172,7 @@
 				{/if}
 			</div>
 			<Dialog.Footer class="sm:justify-between">
-				{#if editing}
+				{#if editing && editing.type !== 'voice'}
 					<Button type="submit" formaction="?/delete" variant="ghost" class="text-destructive" onclick={(e) => { if (!confirm(`删除厂商 ${editing?.name}？成员的开通记录会一起删除。`)) e.preventDefault(); }}><Trash />删除</Button>
 				{:else}<span></span>{/if}
 				<div class="flex gap-2">

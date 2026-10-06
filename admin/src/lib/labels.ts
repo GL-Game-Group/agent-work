@@ -4,7 +4,7 @@ export const TEAM_LABEL: Record<string, string> = { dev: '开发', product: '产
 export const MODE_LABEL: Record<string, string> = { shared: '共享 Key', dedicated: '独立 Key', account: '订阅账号' };
 export const MODE_SHORT: Record<string, string> = { shared: '共享', dedicated: '独立', account: '订阅' };
 export const KIND_LABEL: Record<string, string> = { device: '桌面端', browser: '浏览器', key: '内部 Key', phone: '手机' };
-export const PROTOCOL_LABEL: Record<string, string> = { openai: 'OpenAI 兼容', anthropic: 'Anthropic Messages' };
+export const PROTOCOL_LABEL: Record<string, string> = { openai: 'OpenAI 兼容', anthropic: 'Anthropic Messages', dashscope: '阿里云百炼', volcengine: '火山引擎' };
 
 /** Audit actions as people read them. */
 export const ACTION_LABEL: Record<string, string> = {
@@ -13,7 +13,7 @@ export const ACTION_LABEL: Record<string, string> = {
 	'member-profile': '修改资料', 'member-tunnels': '修改隧道权限', 'member-vendors': '调整厂商', 'member-assign': '调整分配', 'member-unassign': '关闭厂商',
 	'key-issue': '生成内部 Key', 'credential-revoke': '吊销设备', 'key-add': '录入 Key', 'key-enable': '启用 Key', 'key-disable': '停用 Key',
 	'key-delete': '删除 Key', 'key-import': '导入 Key', 'vendor-add': '新增厂商', 'vendor-update': '修改厂商', 'vendor-delete': '删除厂商',
-	'vendor-catalog': '刷新模型列表', 'vendor-models': '修改开放模型', 'subscription-add': '新增订阅', 'subscription-update': '修改订阅',
+	'vendor-catalog': '刷新模型列表', 'vendor-models': '修改开放模型', 'voice-settings': '修改语音设置', 'voice-catalog': '更新官方音色', 'voice-voices': '修改开放音色', 'subscription-add': '新增订阅', 'subscription-update': '修改订阅',
 	'subscription-delete': '删除订阅', 'account-add': '添加账号', 'account-release': '收回账号', 'account-delete': '删除账号',
 	'config-set': '修改系统配置', 'config-delete': '删除系统配置',
 	'plugin-add': '登记插件', 'plugin-update': '更新插件', 'plugin-describe': '修改插件说明', 'plugin-publish': '上架插件', 'plugin-hide': '下架插件', 'plugin-delete': '删除插件',

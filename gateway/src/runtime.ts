@@ -15,6 +15,7 @@ import { createGatewayHandler, importLegacyKey, sessionCookieName, type GatewayH
 import { Tunnels } from './tunnels.ts'
 import { AdminService, SelfService } from './services.ts'
 import { Vendors } from './vendors.ts'
+import { Voice } from './voice.ts'
 
 export interface Runtime {
   config: GatewayConfig
@@ -23,6 +24,7 @@ export interface Runtime {
   vendors: Vendors
   plugins: PluginCatalog
   tunnels: Tunnels
+  voice: Voice
   admin: AdminService
   self: SelfService
   /** Handles everything under /agent-work/. */
@@ -51,18 +53,20 @@ export function createRuntime(config: GatewayConfig, options: RuntimeOptions = {
   importLegacyKey(config, store, vendors, secrets !== undefined)
   const plugins = new PluginCatalog(store, options.now)
   const tunnels = new Tunnels(store, config, options.now)
+  const voice = new Voice(store, vendors, options.now)
   const { handle, upgrade } = createGatewayHandler({
-    config, store, github, vendors, plugins, tunnels, webLogin: true,
+    config, store, github, vendors, plugins, tunnels, voice, webLogin: true,
+    ...options.fetch === undefined ? {} : { fetch: options.fetch },
     ...options.now === undefined ? {} : { now: options.now },
     ...options.authRateLimit === undefined ? {} : { authRateLimit: options.authRateLimit },
   })
   const deps = {
-    config, store, github, vendors, plugins, tunnels,
+    config, store, github, vendors, plugins, tunnels, voice,
     ...options.now === undefined ? {} : { now: options.now },
     ...options.fetch === undefined ? {} : { fetch: options.fetch },
   }
   return {
-    config, store, github, vendors, plugins, tunnels,
+    config, store, github, vendors, plugins, tunnels, voice,
     admin: new AdminService(deps),
     self: new SelfService(deps),
     gateway: handle,

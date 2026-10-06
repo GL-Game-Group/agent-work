@@ -363,6 +363,61 @@ drop table tunnels;
 alter table tunnels_v7 rename to tunnels;
 `
 
+/**
+ * Voice (GL Work for iOS): `voice` vendors, whose keys the phone never sees;
+ * the company service trades the member's key for a short-lived vendor token
+ * the phone uses directly (voice.ts). Their voices as the vendors list them,
+ * and the token trades, for the rate limit. The vendors table is rebuilt for
+ * the new type and protocols, with foreign keys off as for v7.
+ */
+const SCHEMA_V8 = `
+create table vendors_v8 (
+  id text primary key,
+  name text not null,
+  type text not null check (type in ('api', 'cli', 'voice')),
+  auth text not null check (auth in ('key', 'account')),
+  protocol text check (protocol in ('anthropic', 'openai', 'dashscope', 'volcengine')),
+  base_url text,
+  models_url text,
+  compat text,
+  models text not null default '[]',
+  catalog text not null default '[]',
+  catalog_at integer,
+  builtin integer not null default 0,
+  created_at integer not null
+);
+insert into vendors_v8 select id, name, type, auth, protocol, base_url, models_url, compat, models, catalog, catalog_at, builtin, created_at from vendors;
+drop table vendors;
+alter table vendors_v8 rename to vendors;
+create table voice_catalog (
+  vendor text not null references vendors(id) on delete cascade,
+  id text not null,
+  name text not null,
+  description text,
+  gender text check (gender in ('female', 'male')),
+  languages text,
+  family text,
+  models text not null default '[]',
+  sample_url text,
+  enabled integer not null default 1,
+  position integer not null,
+  updated_at integer not null,
+  primary key (vendor, id)
+);
+create table voice_tokens (
+  member text not null,
+  vendor text not null,
+  at integer not null
+);
+create index voice_tokens_member on voice_tokens(member, at);
+`
+
+/** Built-in voice vendors (v8): Alibaba Model Studio (千问) and Volcengine (豆包语音). */
+const SEED_VOICE_VENDORS: [id: string, name: string, protocol: string, baseUrl: string][] = [
+  ['qwen-voice', '千问语音', 'dashscope', 'https://dashscope.aliyuncs.com'],
+  ['volc-voice', '火山语音', 'volcengine', 'https://openspeech.bytedance.com'],
+]
+
 const SEED_VENDORS: [id: string, name: string, type: 'api' | 'cli', auth: 'key' | 'account', protocol: string | null, baseUrl: string | null, modelsUrl: string | null, compat: string | null, models: string][] = [
   ['codex', 'Codex', 'cli', 'account', null, null, null, null, '[]'],
   ['claude', 'Claude', 'cli', 'account', null, null, null, null, '[]'],
@@ -440,6 +495,21 @@ export class Store {
         this.db.exec(`begin; ${SCHEMA_V7}`)
         if ((this.db.prepare('pragma foreign_key_check').all() as unknown[]).length > 0) throw new Error('gateway: schema v7 broke a foreign key')
         this.db.exec('pragma user_version = 7; commit;')
+      } catch (error) {
+        if (this.db.isTransaction) this.db.exec('rollback')
+        throw error
+      } finally {
+        this.db.exec('pragma foreign_keys = on;')
+      }
+    }
+    if (version <= 7) {
+      this.db.exec('pragma foreign_keys = off;')
+      try {
+        this.db.exec(`begin; ${SCHEMA_V8}`)
+        const seed = this.db.prepare(`insert into vendors (id, name, type, auth, protocol, base_url, builtin, created_at) values (?, ?, 'voice', 'key', ?, ?, 1, ?) on conflict (id) do nothing`)
+        for (const row of SEED_VOICE_VENDORS) seed.run(...row, this.now())
+        if ((this.db.prepare('pragma foreign_key_check').all() as unknown[]).length > 0) throw new Error('gateway: schema v8 broke a foreign key')
+        this.db.exec('pragma user_version = 8; commit;')
       } catch (error) {
         if (this.db.isTransaction) this.db.exec('rollback')
         throw error

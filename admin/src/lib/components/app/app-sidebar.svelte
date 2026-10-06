@@ -7,6 +7,7 @@
 	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
 	import Boxes from '@lucide/svelte/icons/boxes';
 	import KeyRound from '@lucide/svelte/icons/key-round';
+	import AudioLines from '@lucide/svelte/icons/audio-lines';
 	import CreditCard from '@lucide/svelte/icons/credit-card';
 	import Users from '@lucide/svelte/icons/users';
 	import MonitorSmartphone from '@lucide/svelte/icons/monitor-smartphone';
@@ -32,6 +33,7 @@
 				{ href: '/ai/vendors', label: '厂商与模型', icon: Boxes },
 				{ href: '/ai/keys', label: 'API Key', icon: KeyRound },
 				{ href: '/ai/subscriptions', label: '订阅与账号', icon: CreditCard },
+				{ href: '/ai/voice', label: '语音', icon: AudioLines },
 			],
 		},
 		{

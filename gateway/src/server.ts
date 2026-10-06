@@ -26,6 +26,7 @@ import { PluginCatalog } from './plugins.ts'
 import { REMOTE_METHOD, refuseUpgrade, relayRequest, relayUpgrade } from './remote-relay.ts'
 import { Tunnels } from './tunnels.ts'
 import { Vendors, type Vendor } from './vendors.ts'
+import { Voice } from './voice.ts'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const BROWSER_SESSION_TTL_MS = 14 * DAY_MS
@@ -82,6 +83,10 @@ export interface GatewayDeps {
   plugins?: PluginCatalog
   /** Members' frp tunnels; created here when absent. */
   tunnels?: Tunnels
+  /** Voice vendors for the phone; created here when absent. */
+  voice?: Voice
+  /** Reaches vendors (voice tokens); injectable for tests. */
+  fetch?: typeof fetch
   /** Refused web sign-ins go back to the web console's /login page rather than an error page here. */
   webLogin?: boolean
 }
@@ -220,6 +225,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
   const vendors = deps.vendors ?? ownVendors()
   const catalog = deps.plugins ?? new PluginCatalog(store, now)
   const tunnels = deps.tunnels ?? new Tunnels(store, config, now)
+  const voice = deps.voice ?? new Voice(store, vendors, now)
+  const fetchImpl = deps.fetch ?? fetch
   function ownVendors(): Vendors {
     const secrets = deps.secrets ?? (config.secretKey === undefined ? undefined : SecretBox.fromEncoded(config.secretKey))
     const created = new Vendors(store, secrets, now)
@@ -371,30 +378,31 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
   async function llm(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const [, vendorId = '', rest = '/'] = LLM_ROUTE.exec(url.pathname) ?? []
     const vendor = vendors.vendor(vendorId)
-    if (vendor === undefined || vendor.auth !== 'key' || vendor.baseUrl === null || vendor.protocol === null) {
+    if (vendor === undefined || vendor.auth !== 'key' || vendor.baseUrl === null || (vendor.protocol !== 'anthropic' && vendor.protocol !== 'openai')) {
       llmError(res, 'anthropic', 404, 'not_found_error', '公司模型网关没有这个厂商。')
       return
     }
+    const protocol = vendor.protocol
     const header = req.headers['x-api-key']
     const bearer = req.headers.authorization?.startsWith('Bearer ') === true ? req.headers.authorization.slice('Bearer '.length) : undefined
     const token = typeof header === 'string' ? header : bearer
     // Desktop Hosts send their device token; members' own tools an internal key.
     const principal = token === undefined ? undefined : store.authenticate(token, ['device', 'key'], clientIp(req))
     if (principal === undefined) {
-      llmError(res, vendor.protocol, 401, 'authentication_error', '登录已失效或内部 Key 已吊销，请重新登录或换一个 Key。')
+      llmError(res, protocol, 401, 'authentication_error', '登录已失效或内部 Key 已吊销，请重新登录或换一个 Key。')
       return
     }
     const assignment = vendors.assignment(principal.member.name, vendor.id)
-    if (assignment === undefined) { llmError(res, vendor.protocol, 403, 'permission_error', `你还没有开通 ${vendor.name}，请联系管理员。`); return }
+    if (assignment === undefined) { llmError(res, protocol, 403, 'permission_error', `你还没有开通 ${vendor.name}，请联系管理员。`); return }
     const key = assignment.apiKey === null ? undefined : vendors.key(assignment.apiKey)
-    if (key?.status !== 'active') { llmError(res, vendor.protocol, 503, 'api_error', `公司还没有可用的 ${vendor.name} Key，请联系管理员。`); return }
+    if (key?.status !== 'active') { llmError(res, protocol, 503, 'api_error', `公司还没有可用的 ${vendor.name} Key，请联系管理员。`); return }
     let apiKey: string
     try { apiKey = vendors.keySecret(key.id) } catch {
-      llmError(res, vendor.protocol, 503, 'api_error', `公司的 ${vendor.name} Key 暂时无法使用，请联系管理员。`)
+      llmError(res, protocol, 503, 'api_error', `公司的 ${vendor.name} Key 暂时无法使用，请联系管理员。`)
       return
     }
     const usage = await forwardLlm(req, res, {
-      baseUrl: vendor.baseUrl, apiKey, protocol: vendor.protocol, models: new Set(vendor.models.map(m => m.id)),
+      baseUrl: vendor.baseUrl, apiKey, protocol: protocol, models: new Set(vendor.models.map(m => m.id)),
     }, rest + url.search)
     if (usage !== undefined) store.recordUsage(principal.member.name, principal.credential.id, usage, { vendor: vendor.id, apiKey: key.id })
   }
@@ -440,6 +448,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
         if (account !== undefined) accounts.push({ vendor: vendor.id, name: vendor.name, account: account.account })
         continue
       }
+      // Voice vendors are the phone's, through /agent-work/phone/voice.
+      if (vendor.type === 'voice') continue
       // Nothing to offer until the member holds an active key.
       if (assignment.apiKey === null || vendors.key(assignment.apiKey)?.status !== 'active' || vendor.protocol === null || vendor.models.length === 0) continue
       if (vendor.type === 'api') settings.push(...vendorSettings(vendor))
@@ -613,7 +623,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     }
   }
 
-  /** What a phone may do: list the member's Macs, reach them, and sign out. */
+  /** What a phone may do: list the member's Macs, reach them, use 语音, and sign out. */
   async function phoneRoute(req: IncomingMessage, res: ServerResponse, url: URL, route: string, { member, credential }: Principal): Promise<void> {
     switch (route) {
       case `POST ${PREFIX}auth/logout`:
@@ -631,6 +641,21 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       case `GET ${PREFIX}remote/hosts`:
         json(res, 200, { hosts: tunnels.remotes(member) })
         return
+      // 语音: what the phone may use, and a short-lived vendor token to use it with.
+      case `GET ${PREFIX}phone/voice`:
+        json(res, 200, voice.forMember(member.name))
+        return
+      case `POST ${PREFIX}phone/voice/token`: {
+        const body = await readJson(req)
+        if (body === undefined) { json(res, 400, { error: 'invalid_request' }); return }
+        try {
+          json(res, 200, await voice.issueToken(member.name, body.vendor, fetchImpl))
+        } catch (error) {
+          if (!Refusal.is(error)) throw error
+          json(res, error.status, { error: error.message })
+        }
+        return
+      }
       default:
     }
     const remote = REMOTE.exec(url.pathname)

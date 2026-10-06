@@ -10,6 +10,9 @@
  * - An `account` vendor (Codex, Claude…) has company accounts the members sign
  *   in to themselves in the vendor's own flow. Only the account name is kept;
  *   each account belongs to one member at a time.
+ * - A `voice` vendor (built in: 千问语音, 火山语音) is a key vendor GL Work for
+ *   iOS reaches directly: the company service trades the member's key for a
+ *   short-lived vendor token (voice.ts). Its models and voices are set under 语音.
  *
  * Enabling a vendor for a member assigns the least-shared active key or a free
  * account; members left without one are served as soon as one is added.
@@ -20,9 +23,10 @@ import type { SecretBox } from './secrets.ts'
 import type { Store } from './db.ts'
 import { randomSecret } from './tokens.ts'
 
-export type VendorType = 'api' | 'cli'
+export type VendorType = 'api' | 'cli' | 'voice'
 export type VendorAuth = 'key' | 'account'
-export type Protocol = 'anthropic' | 'openai'
+/** Model vendors speak anthropic or openai; voice vendors their own APIs. */
+export type Protocol = 'anthropic' | 'openai' | 'dashscope' | 'volcengine'
 
 export interface VendorModel {
   id: string
@@ -170,6 +174,12 @@ function compatOf(value: unknown): string | null {
   return encoded === '{}' ? null : encoded
 }
 
+/** A 火山语音 key as stored: "<app id>:<access token>". */
+export function volcengineCredential(secret: string): { appId: string; token: string } | undefined {
+  const match = /^(\d{4,20}):(\S{8,})$/u.exec(secret)
+  return match === null ? undefined : { appId: match[1] as string, token: match[2] as string }
+}
+
 export class Vendors {
   private readonly db: DatabaseSync
   private readonly box: SecretBox | undefined
@@ -208,6 +218,7 @@ export class Vendors {
 
   /** Fields every vendor write validates the same way. */
   private vendorFields(input: Record<string, unknown>, auth: VendorAuth) {
+    if (input.type === 'voice') throw new Refusal(400, '语音厂商是内置的，只能改名称')
     const type = input.type
     if (type !== 'api' && type !== 'cli') throw new Refusal(400, '类型只能是 api 或 cli')
     if (auth !== 'key') return { name: text(input.name, '厂商名称', 40), type, protocol: null, baseUrl: null, modelsUrl: null, compat: null }
@@ -232,6 +243,10 @@ export class Vendors {
   /** The id and login method stay; changing them would orphan keys, accounts and members' config. */
   updateVendor(id: string, input: Record<string, unknown>): Vendor {
     const vendor = this.mustVendor(id)
+    if (vendor.type === 'voice') {
+      this.db.prepare('update vendors set name = ? where id = ?').run(text(input.name, '厂商名称', 40), id)
+      return this.mustVendor(id)
+    }
     const fields = this.vendorFields({ type: vendor.type, ...input }, vendor.auth)
     this.db.prepare('update vendors set name = ?, type = ?, protocol = ?, base_url = ?, models_url = ?, compat = ? where id = ?')
       .run(fields.name, fields.type, fields.protocol, fields.baseUrl, fields.modelsUrl, fields.compat, id)
@@ -240,6 +255,7 @@ export class Vendors {
 
   deleteVendor(id: string): void {
     this.mustVendor(id)
+    if (this.mustVendor(id).type === 'voice') throw new Refusal(409, '语音厂商是内置的，不能删除；不用时在“语音”里关闭')
     const held = this.db.prepare('select (select count(*) from api_keys where vendor = ?) + (select count(*) from cli_accounts where vendor = ?) as n').get(id, id) as { n: number }
     if (held.n > 0) throw new Refusal(409, '请先删除这个厂商下的 Key 或账号')
     this.db.prepare('delete from vendors where id = ?').run(id)
@@ -248,6 +264,7 @@ export class Vendors {
   setModels(id: string, models: unknown): Vendor {
     const vendor = this.mustVendor(id)
     if (vendor.auth !== 'key') throw new Refusal(400, '账号登录的厂商没有模型配置')
+    if (vendor.type === 'voice') throw new Refusal(400, '语音厂商的模型在“语音”里设置')
     if (!Array.isArray(models) || models.length > MAX_MODELS) throw new Refusal(400, `模型列表格式不正确（最多 ${String(MAX_MODELS)} 个）`)
     const seen = new Set<string>()
     const clean: VendorModel[] = []
@@ -271,6 +288,7 @@ export class Vendors {
   async refreshCatalog(id: string, fetchImpl: typeof fetch = fetch): Promise<Vendor> {
     const vendor = this.mustVendor(id)
     if (vendor.auth !== 'key' || vendor.baseUrl === null) throw new Refusal(400, '账号登录的厂商没有模型列表')
+    if (vendor.type === 'voice') throw new Refusal(400, '语音厂商的音色在“语音”里从官方更新')
     const key = this.listKeys(id).find(k => k.status === 'active')
     if (key === undefined) throw new Refusal(409, '请先为这个厂商录入一个可用的 API Key')
     const secret = this.keySecret(key.id)
@@ -319,6 +337,8 @@ export class Vendors {
     if (mode !== 'shared' && mode !== 'dedicated') throw new Refusal(400, 'Key 类型只能是共享或独立')
     const plain = typeof secret === 'string' ? secret.trim() : ''
     if (plain.length < 8 || plain.length > 512 || /\s/u.test(plain)) throw new Refusal(400, '请填写完整的 API Key')
+    // 豆包语音 signs in with an app's id and its access token, kept together as one secret.
+    if (vendor.protocol === 'volcengine' && volcengineCredential(plain) === undefined) throw new Refusal(400, '火山语音的 Key 请填写为 “APP ID:Access Token”')
     if (member !== null && mode !== 'dedicated') throw new Refusal(400, '只有独立 Key 能直接指定成员')
     const sealed = this.sealer().seal(plain)
     const id = `key_${randomSecret().slice(0, 10)}`

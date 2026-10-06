@@ -115,7 +115,13 @@
 				<Field label="名称" id="k-label"><Input id="k-label" name="label" placeholder="例如 公司主账号" required /></Field>
 			</div>
 			<input type="hidden" name="vendor" value={form.vendor} />
-			<Field label="API Key" id="k-key"><Input id="k-key" name="key" type="password" placeholder="sk-…" autocomplete="new-password" class="font-mono" required /></Field>
+			{#if form.vendor === 'volc-voice'}
+				<Field label="APP ID:Access Token" id="k-key" hint="火山控制台 → 豆包语音 → 应用的 APP ID 和 Access Token，中间用英文冒号连接。">
+					<Input id="k-key" name="key" type="password" placeholder="6123456789:xxxxxxxx" autocomplete="new-password" class="font-mono" required />
+				</Field>
+			{:else}
+				<Field label="API Key" id="k-key"><Input id="k-key" name="key" type="password" placeholder="sk-…" autocomplete="new-password" class="font-mono" required /></Field>
+			{/if}
 			<Field label="类型" hint={form.mode === 'shared' ? '多人共用，开通这个厂商的成员自动均衡分配。' : '只分给一个成员，别人不会被分到它。'}>
 				<Choice bind:value={form.mode} options={[{ value: 'shared', label: '共享 Key' }, { value: 'dedicated', label: '独立 Key' }]} />
 			</Field>

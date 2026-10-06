@@ -12,6 +12,7 @@ import type { GitHub } from './github.ts'
 import { fetchPackage, packageUrl, PluginCatalog, type PluginPackage } from './plugins.ts'
 import { Tunnels, type TunnelSettings } from './tunnels.ts'
 import type { Vendors } from './vendors.ts'
+import { Voice, type VoiceSettings } from './voice.ts'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 export const USAGE_WINDOWS = [1, 7, 30, 90] as const
@@ -33,7 +34,8 @@ export interface ServiceDeps {
   vendors: Vendors
   plugins?: PluginCatalog
   tunnels?: Tunnels
-  /** Downloads plugin packages; injectable for tests. */
+  voice?: Voice
+  /** Downloads plugin packages and voice lists; injectable for tests. */
   fetch?: typeof fetch
   now?: () => number
 }
@@ -101,6 +103,7 @@ export class AdminService {
   private readonly vendors: Vendors
   private readonly catalog: PluginCatalog
   private readonly tunnelStore: Tunnels
+  private readonly voiceStore: Voice
   private readonly fetch: typeof fetch
   private readonly now: () => number
 
@@ -111,6 +114,7 @@ export class AdminService {
     this.vendors = deps.vendors
     this.catalog = deps.plugins ?? new PluginCatalog(deps.store, deps.now)
     this.tunnelStore = deps.tunnels ?? new Tunnels(deps.store, deps.config, deps.now)
+    this.voiceStore = deps.voice ?? new Voice(deps.store, deps.vendors, deps.now)
     this.fetch = deps.fetch ?? fetch
     this.now = deps.now ?? Date.now
   }
@@ -482,6 +486,48 @@ export class AdminService {
   }
 
   // Tunnels
+
+  // 语音 (GL Work for iOS)
+
+  /** The voice vendors with their keys and members, the settings, the voices, and the last day's token trades. */
+  voice() {
+    const keys = this.vendors.listKeys()
+    const assignments = this.vendors.assignments()
+    return {
+      settings: this.voiceStore.settings(),
+      vendors: this.voiceStore.voiceVendors().map(v => ({
+        id: v.id, name: v.name, protocol: v.protocol,
+        activeKeys: keys.filter(k => k.vendor === v.id && k.status === 'active').length,
+        members: assignments.filter(a => a.vendor === v.id && a.apiKey !== null).map(a => a.member),
+        waiting: assignments.filter(a => a.vendor === v.id && a.apiKey === null).map(a => a.member),
+        catalogAt: this.voiceStore.catalogAt(v.id),
+      })),
+      voices: this.voiceStore.catalog(),
+      tokens: this.voiceStore.tokensSince(this.now() - DAY_MS),
+    }
+  }
+
+  setVoiceSettings(actor: Actor, input: Record<string, unknown>): VoiceSettings {
+    const before = JSON.stringify(this.voiceStore.settings())
+    const after = this.voiceStore.setSettings(input)
+    if (JSON.stringify(after) !== before) {
+      const vendors = Object.entries(after.vendors).map(([id, v]) => `${id} 识别${v.asr ? '开' : '关'}(${v.asrModel}) 播报${v.tts ? '开' : '关'}(${v.ttsModel})`)
+      this.audit(actor, 'voice-settings', null, `${vendors.join('; ')}; 令牌 ${String(after.tokenTtlSeconds)} 秒, 每小时 ${String(after.tokensPerHour)} 次`)
+    }
+    return after
+  }
+
+  async refreshVoices(actor: Actor, vendor: string) {
+    const result = await this.voiceStore.refreshCatalog(vendor, this.fetch)
+    this.audit(actor, 'voice-catalog', vendor, `${String(result.voices)} voices, ${String(result.added)} new`)
+    return result
+  }
+
+  setEnabledVoices(actor: Actor, vendor: string, ids: unknown): number {
+    const count = this.voiceStore.setEnabledVoices(vendor, ids)
+    this.audit(actor, 'voice-voices', vendor, `${String(count)} voices shown`)
+    return count
+  }
 
   /** Every tunnel with its owner's device, the domains, the settings, and who may open which kind. */
   tunnels() {

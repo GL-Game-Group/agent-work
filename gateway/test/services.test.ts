@@ -114,7 +114,7 @@ describe('web console operations', () => {
   })
 
   it('manages vendors and refreshes a model list with a sealed key', async () => {
-    assert.deepEqual(rt.admin.vendorList().map(v => `${v.id} ${v.type}/${v.auth}`), ['codex cli/account', 'claude cli/account', 'qoder cli/account', 'qwen api/key', 'deepseek api/key'])
+    assert.deepEqual(rt.admin.vendorList().map(v => `${v.id} ${v.type}/${v.auth}`), ['codex cli/account', 'claude cli/account', 'qoder cli/account', 'qwen api/key', 'deepseek api/key', 'qwen-voice voice/key', 'volc-voice voice/key'])
     assert.equal(rt.admin.addVendor(alice, { id: 'moonshot', name: 'Kimi', type: 'api', auth: 'key', protocol: 'openai', baseUrl: 'https://api.moonshot.cn/v1/' }).baseUrl, 'https://api.moonshot.cn/v1')
     await refused(409, () => rt.admin.addVendor(alice, { id: 'moonshot', name: 'x', type: 'api', auth: 'key', protocol: 'openai', baseUrl: 'https://a.example' }))
     await refused(400, () => rt.admin.addVendor(alice, { id: 'plain', name: 'x', type: 'api', auth: 'key', protocol: 'openai', baseUrl: 'http://a.example' }))
