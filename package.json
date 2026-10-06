@@ -11,6 +11,7 @@
     "stage": "node scripts/stage.mjs",
     "save-patches": "node scripts/save-patches.mjs",
     "package": "node scripts/package.mjs",
+    "try:desktop": "node scripts/try-desktop.mjs",
     "gateway:test": "pnpm --filter @agent-work/gateway typecheck && pnpm --filter @agent-work/gateway test",
     "brand": "node scripts/brand.mjs",
     "admin:dev": "pnpm --filter @agent-work/admin dev",
