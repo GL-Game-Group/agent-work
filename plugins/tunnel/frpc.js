@@ -83,7 +83,8 @@ export function frpcConfig({ server, member, tunnels, passwords, visitors, remot
     if (t.type === 'http') {
       if (t.host === null) throw new Error(`tunnel ${t.id} has no address`)
       lines.push('type = "http"', 'localIP = "127.0.0.1"', `localPort = ${t.localPort}`, `customDomains = ${list([t.host])}`)
-      const auth = passwords[t.id]
+      // A password kept on this machine applies only while the tunnel asks for one.
+      const auth = t.protection === 'password' ? passwords[t.id] : undefined
       if (auth !== undefined) lines.push(`httpUser = ${str(auth.user)}`, `httpPassword = ${str(auth.password)}`)
       else if (t.protection === 'password') throw new Error(`tunnel ${t.id} needs a password`)
     } else {

@@ -61,7 +61,8 @@ window.__ModuleLoader__.load({
 			const canSsh = data.grants.ssh && data.settings.ssh
 			const [form, setForm] = React.useState({
 				type: canWeb ? 'http' : 'ssh', name: '', localPort: '', domain: data.domains.find(d => d.isDefault)?.name ?? data.domains[0]?.name ?? '',
-				protection: 'password', access: 'some', members: [], publicPort: false,
+				// No password unless the member asks for one (or the company requires it).
+				protection: data.settings.allowPublic ? 'public' : 'password', access: 'some', members: [], publicPort: false,
 			})
 			const [error, setError] = React.useState(null)
 			const set = (patch) => setForm(f => ({ ...f, ...patch }))
@@ -117,7 +118,7 @@ window.__ModuleLoader__.load({
 				error ? h('span', { style: { color: 'var(--dsw-alias-text-danger, #dc2626)', fontSize: '12px' } }, error) : null)
 		}
 
-		function TunnelRow({ t, act, notify }) {
+		function TunnelRow({ t, act, notify, allowPublic }) {
 			const [editing, setEditing] = React.useState(false)
 			const run = (body, done) => act(body).then(() => done && notify(done), err => notify(err.message, true))
 			const address = t.host ? `https://${t.host}` : null
@@ -130,6 +131,13 @@ window.__ModuleLoader__.load({
 					h('span', { style: { marginLeft: 'auto' } }, h(Status, { t })),
 					h(ui.Button, { size: 'sm', variant: 'ghost', icon: h(ui.IconTrashOutlineRegular, { size: 14 }), 'aria-label': '删除', title: '删除',
 						onClick: () => { if (confirm(`删除隧道 ${t.name}？`)) run({ op: 'delete', id: t.id }, '已删除') } })),
+				t.type === 'http' ? h('div', { style: row },
+					h(ui.Switch, {
+						checked: t.protection === 'password', label: '需要密码才能访问',
+						disabled: t.protection === 'password' && !allowPublic,
+						onChange: v => run({ op: 'update', id: t.id, protection: v ? 'password' : 'public' }, v ? '已开启访问密码' : '已关闭访问密码，任何人都能打开这个地址'),
+					}),
+					t.protection === 'password' && !allowPublic ? h('span', { style: muted }, '管理员要求网页隧道都设置密码') : null) : null,
 				h('div', { style: { ...row, ...muted } }, `本机端口 ${t.localPort}`,
 					t.publicPort ? ` · 公网端口 ${t.publicPort}` : '',
 					t.message && t.state !== 'on' ? h('span', { style: { color: t.state === 'error' ? 'var(--dsw-alias-text-danger, #dc2626)' : undefined } }, ` · ${t.message}`) : null),
@@ -187,7 +195,7 @@ window.__ModuleLoader__.load({
 				!canCreate ? h('div', { style: muted }, '你还没有开通内网穿透，请联系管理员。') : null,
 				creating ? h(CreateForm, { data, act, onDone: () => setCreating(false) }) : null,
 				mine.length === 0 && !creating ? h('div', { style: muted }, '还没有隧道。') : null,
-				...mine.map(t => h(TunnelRow, { key: t.id, t, act, notify })),
+				...mine.map(t => h(TunnelRow, { key: t.id, t, act, notify, allowPublic: data.settings.allowPublic })),
 				(data.shared ?? []).length > 0 ? h('h3', { style: { margin: '8px 0 0', fontSize: '15px' } }, '同事分享给我的 SSH') : null,
 				...(data.shared ?? []).map(s => h(SharedRow, { key: s.id, s, act, notify })))
 		}

@@ -361,7 +361,7 @@ export function apply(ctx, config) {
           id: t.id, type: t.type, name: t.name, domain: t.domain, host: t.host, localPort: t.localPort, protection: t.protection,
           sshAccess: t.sshAccess, publicPort: t.publicPort, closedBy: t.closedBy, online: t.online,
           here: t.device === remote?.device, running: local.running.includes(t.id),
-          auth: local.passwords[t.id] ?? null, ...statusOf(t),
+          auth: t.protection === 'password' ? local.passwords[t.id] ?? null : null, ...statusOf(t),
         })),
         shared: remote.shared.map(s => ({
           id: s.id, owner: s.owner, name: s.name, online: s.online, port: local.visitors[s.id] ?? null,
@@ -410,7 +410,7 @@ export function apply(ctx, config) {
       case 'create': {
         const input = { type: body.type, name: body.name, localPort: body.localPort, domain: body.domain, protection: body.protection, sshAccess: body.sshAccess, publicPort: body.publicPort === true }
         const created = /** @type {{ id: string, type: string, protection: string }} */ (await call('POST', '/agent-work/tunnels', input))
-        if (created.type === 'http') local.passwords[created.id] = newPassword()
+        if (created.type === 'http' && created.protection === 'password') local.passwords[created.id] = newPassword()
         local.running.push(created.id)
         await saveLocal()
         return { created: created.id }
@@ -419,6 +419,11 @@ export function apply(ctx, config) {
         own(id)
         const input = Object.fromEntries(['localPort', 'protection', 'sshAccess'].filter(k => body[k] !== undefined).map(k => [k, body[k]]))
         await call('PATCH', `/agent-work/tunnels/${encodeURIComponent(id)}`, input)
+        // Turned to "password": one for this machine, unless it kept one from before.
+        if (body.protection === 'password' && local.passwords[id] === undefined) {
+          local.passwords[id] = newPassword()
+          await saveLocal()
+        }
         return {}
       }
       case 'delete': {
@@ -435,7 +440,7 @@ export function apply(ctx, config) {
         local.running = local.running.filter(x => x !== id)
         if (body.op === 'start') {
           local.running.push(id)
-          if (tunnel.type === 'http' && local.passwords[id] === undefined) local.passwords[id] = newPassword()
+          if (tunnel.type === 'http' && tunnel.protection === 'password' && local.passwords[id] === undefined) local.passwords[id] = newPassword()
         }
         await saveLocal()
         return {}

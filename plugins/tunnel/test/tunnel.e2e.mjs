@@ -233,6 +233,27 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     assert.equal((await vhost(vhostPort, t.host, `guest:${t.auth.password}`)).status, 401)
   })
 
+  it('opens a public web tunnel without a password, and turns the password on and off', async () => {
+    const created = await action({ op: 'create', type: 'http', name: 'open', localPort: webPort, protection: 'public' })
+    let view = await until(v => v.tunnels.find(t => t.id === created.created)?.state === 'on', 'public tunnel on')
+    const t = view.tunnels.find(x => x.id === created.created)
+    assert.equal(t.protection, 'public')
+    assert.equal(t.auth, null, 'no password shown for a public tunnel')
+    assert.equal((await vhost(vhostPort, t.host)).body, 'hello from alice')
+    // Password on: frpc restarts with Basic Auth.
+    await action({ op: 'update', id: t.id, protection: 'password' })
+    view = await until(v => v.tunnels.find(x => x.id === t.id)?.auth !== null && v.tunnels.find(x => x.id === t.id)?.state === 'on', 'password on')
+    const auth = view.tunnels.find(x => x.id === t.id).auth
+    for (let i = 0; i < 50 && (await vhost(vhostPort, t.host)).status !== 401; i += 1) await sleep(200)
+    assert.equal((await vhost(vhostPort, t.host)).status, 401)
+    assert.equal((await vhost(vhostPort, t.host, `${auth.user}:${auth.password}`)).body, 'hello from alice')
+    // And off again.
+    await action({ op: 'update', id: t.id, protection: 'public' })
+    for (let i = 0; i < 50 && (await vhost(vhostPort, t.host)).status !== 200; i += 1) await sleep(200)
+    assert.equal((await vhost(vhostPort, t.host)).body, 'hello from alice')
+    await action({ op: 'delete', id: t.id })
+  })
+
   it('shares SSH both ways: bob reaches alice, alice reaches bob', async () => {
     const created = await action({ op: 'create', type: 'ssh', name: 'box', localPort: sshPort, sshAccess: ['bob'] })
     await until(v => v.tunnels.find(t => t.id === created.created)?.state === 'on', 'ssh tunnel on')

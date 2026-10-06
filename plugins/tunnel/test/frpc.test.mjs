@@ -31,6 +31,11 @@ describe('frpc config', () => {
     assert.match(config, /httpPassword = "p\\"w"/u)
   })
 
+  it('serves a public web tunnel without Basic Auth, even with a password kept from before', () => {
+    const config = frpcConfig({ server, member: 'alice', tunnels: [{ ...web, protection: 'public' }], passwords: { tun_web: { user: 'guest', password: 'pw' } }, visitors: [] }) ?? ''
+    assert.doesNotMatch(config, /httpUser|httpPassword/u)
+  })
+
   it('refuses a passworded web tunnel without its password', () => {
     assert.throws(() => frpcConfig({ server, member: 'alice', tunnels: [web], passwords: {}, visitors: [] }), /needs a password/u)
   })
