@@ -1,6 +1,6 @@
-// 文本输入, client half: room for long prompts (product requirements) without a second input box.
+// 长输入, client half: room for long prompts (product requirements) without a second input box.
 // The Session's own composer grows to fill the conversation area, in two ways:
-// - the 文本输入 view after 对话 and 轨迹 (it draws nothing itself; the composer below fills it);
+// - the 长输入 view after 对话 and 轨迹 (it draws nothing itself; the composer below fills it);
 // - the 展开 button in the composer's tool row, also in a new Session (whose view tabs are not
 //   shown yet); pressing it again collapses.
 // It stays the composer: @ references, attachments, the model and slash commands all work, and
@@ -149,7 +149,7 @@ window.__ModuleLoader__.load({
 
 		// --- The view and the button ----------------------------------------------------------
 
-		/** The 文本输入 view: expands the composer while selected; draws nothing itself. */
+		/** The 长输入 view: expands the composer while selected; draws nothing itself. */
 		function LongInputView({ sessionId, useInput, openView, viewRequest, completeViewRequest }) {
 			React.useEffect(() => {
 				setReason(sessionId, 'view', true)
@@ -169,7 +169,7 @@ window.__ModuleLoader__.load({
 		const collapseIcon = h('svg', { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
 			h('path', { d: 'M13.5 6.5h-4v-4M9.5 6.5 14 2M2.5 9.5h4v4M6.5 9.5 2 14' }))
 
-		/** 展开 / 收起 in the composer's tool row; hidden on the 文本输入 view, which is expanded already. */
+		/** 展开 / 收起 in the composer's tool row; hidden on the 长输入 view, which is expanded already. */
 		function ExpandButton({ sessionId, useInput }) {
 			const reasons = useReasons(sessionId)
 			const onView = reasons.includes('view')
@@ -221,13 +221,13 @@ window.__ModuleLoader__.load({
 					document.removeEventListener('cut', onBeforeInput, true)
 					for (const sessionId of [...expanded.keys()]) { expanded.delete(sessionId); paint(sessionId) }
 				}
-			}, 'agent-work: 文本输入 styles and keys')
+			}, 'agent-work: 长输入 styles and keys')
 			ctx.effect(() => ctx.slots.inject('conversation.view', () => ctx.slots.register({
-				name: 'conversation.view', id: VIEW, order: 20, label: () => '文本输入',
-			}, LongInputView)), 'agent-work: 文本输入 view')
+				name: 'conversation.view', id: VIEW, order: 20, label: () => '长输入',
+			}, LongInputView)), 'agent-work: 长输入 view')
 			ctx.effect(() => ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
 				name: 'conversation.input.right', id: 'agent-work-long-input-expand', order: 100,
-			}, ExpandButton)), 'agent-work: 文本输入 expand button')
+			}, ExpandButton)), 'agent-work: 长输入 expand button')
 		}
 		return exports
 	}

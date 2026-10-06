@@ -33,7 +33,8 @@
     # (company/package.json): a package with a client module may own only one row.
     - id: company-plugins
       name: ./company/index.js
-    # 文本输入: a full-size editor of the composer draft beside 会话 and 轨迹.
+    # 长输入: the composer grows to fill the conversation for long prompts (a view beside
+    # 对话 and 轨迹, and an 展开 button in the composer).
     # Client only; a nested package for the same one-row rule as company-plugins.
     - id: long-input
       name: ./long-input/index.js

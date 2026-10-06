@@ -113,5 +113,5 @@
 - 测试给 `dsh web` 传 `HOME` 没用：插件里的 `os.homedir()` 仍是开发者真实的用户目录。插件要扫描用户目录的，给一个配置项（如工作区插件的 `searchRoots`），测试里用它指向临时目录。
 - 启动子进程（安装脚本、命令行）时显式传 `HOME`：Host 的子进程不一定继承 Host 看到的 HOME。
 - dsh 0.2 改了几个手机远程用到的宿主接口：`typertGateway.wireStream.open` 要传 `(endpoint, payload, uplink, peer, signal)` 五个参数，少传时信号落到 uplink 上，`$events` 一打开就失败；`session/control` 不再有队列帧，排队消息在 `inbox` 投影里；`subagents/list` 不再是远程方法，子代理列表在父会话的 `subagentCatalog` 投影里。
-- “文本输入”（`plugins/team-bundle/long-input/client.js`）靠上游会话框的 DOM 标记放大会话框、改 Enter：`data-conversation-content`/`data-conversation-session`/`data-content-phase`、`data-composer-seat` 上声明的 `--dsh-composer-text-max-height`、`data-composer-input`、`data-chain-overlay-fallback`、`data-trigger-menu` 及其 listbox 的 `aria-activedescendant`。它们不是上游承诺的接口，升级上游后要实际点一下“文本输入”和“展开”：改名了不会报错，只会不再放大或 Enter 又变成发送。
+- “长输入”（`plugins/team-bundle/long-input/client.js`）靠上游会话框的 DOM 标记放大会话框、改 Enter：`data-conversation-content`/`data-conversation-session`/`data-content-phase`、`data-composer-seat` 上声明的 `--dsh-composer-text-max-height`、`data-composer-input`、`data-chain-overlay-fallback`、`data-trigger-menu` 及其 listbox 的 `aria-activedescendant`。它们不是上游承诺的接口，升级上游后要实际点一下“长输入”和“展开”：改名了不会报错，只会不再放大或 Enter 又变成发送。
 - Host 读取的是启动时的环境变量快照，运行中修改 `process.env` 不会生效。要给 Host 提供 Key，就写进凭据存储（`ctx.credentials.set`）。
