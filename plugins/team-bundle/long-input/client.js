@@ -1,16 +1,20 @@
-// 文本输入, client half: one full-size text area for long prompts (product requirements)
-// that the composer is too small for, in two places:
-// - a third conversation view after 对话 and 轨迹;
-// - a dialog from the 展开 button in the composer's tool row, which also works in a new
-//   Session (the view tabs only show once a Session has messages). The button opens the
-//   dialog rather than the view: only the views themselves are handed openView.
+// 文本输入, client half: room for long prompts (product requirements) without a second input box.
+// The Session's own composer grows to fill the conversation area, in two ways:
+// - the 文本输入 view after 对话 and 轨迹 (it draws nothing itself; the composer below fills it);
+// - the 展开 button in the composer's tool row, also in a new Session (whose view tabs are not
+//   shown yet); pressing it again collapses.
+// It stays the composer: @ references, attachments, the model and slash commands all work, and
+// the draft is the Session's. While expanded, Enter starts a new line and ⌘/Ctrl+Enter sends (as
+// plain Enter would; the configured busy delivery applies). After a send the view returns to 对话
+// and the button collapses.
 //
-// Both edit the Session's composer draft itself, not a copy: what is typed shows in the
-// composer and back, survives reloads with the draft, and 发送 is the composer's own
-// submission (model, attachments, queueing and steering unchanged). After a send the view
-// returns to 对话 and the dialog closes, to show the reply. The composer stays below the
-// view: hiding it per view is not something the composer chain can select on, and approval
-// or question cards take its place.
+// The composer offers no size or key settings, so this leans on its markup: the
+// [data-conversation-content][data-conversation-session] body, the [data-composer-seat] that
+// declares --dsh-composer-text-max-height, the [data-composer-input] editable, the
+// [data-chain-overlay-fallback] that hides it under a question or approval card, and the
+// [data-trigger-menu] of an open @ or / menu (its listbox's aria-activedescendant marks a
+// highlight). If an upstream update renames them, the composer just stays its normal size and
+// keys (CLAUDE.md, 已知的坑).
 //
 // Hand-written in the client module format the Host serves: a factory receiving the loader's require.
 window.__ModuleLoader__.load({
@@ -20,194 +24,207 @@ window.__ModuleLoader__.load({
 		const ui = require('@deepseek-ai/dsh-client-ui-primitives')
 		const h = React.createElement
 		const VIEW = 'agent-work-long-input'
-		/** Typing reaches the composer after this pause: one draft write per burst, not per key. */
-		const SYNC_MS = 200
+		const MARK = 'data-agent-work-long-input'
 		const mac = /Mac|iPhone|iPad/u.test(navigator.platform)
+		const HINT = `Enter 换行 · ${mac ? '⌘' : 'Ctrl'} + Enter 发送`
 
-		const caption = { fontSize: '12px', color: 'var(--dsw-alias-label-tertiary, inherit)', opacity: 0.9 }
+		// The cap (and the editable's floor) is the visible band less the composer's own chrome; a
+		// new Session's hero keeps its brand row; an open @ or / menu gets room above.
+		const STYLE = `
+[${MARK}] [data-composer-seat] {
+	--dsh-composer-text-max-height: max(160px, calc(var(--dsh-conversation-viewport-height, 80vh) - 150px));
+}
+[${MARK}]:not([data-content-phase="active"]) [data-composer-seat] {
+	--dsh-composer-text-max-height: max(160px, calc(var(--dsh-conversation-viewport-height, 80vh) - 290px));
+}
+:root:has([data-trigger-menu]) [${MARK}] [data-composer-seat] {
+	--dsh-composer-text-max-height: max(120px, calc(var(--dsh-conversation-viewport-height, 80vh) - 480px));
+}
+[${MARK}] [data-composer-seat] [data-composer-input] {
+	min-height: var(--dsh-composer-text-max-height);
+}
+[${MARK}] [data-composer-seat]::after {
+	content: attr(data-agent-work-hint);
+	align-self: center;
+	padding: 4px 0;
+	font-size: 12px;
+	color: var(--dsw-alias-label-tertiary, inherit);
+}
+[${MARK}] [data-composer-seat]:has([data-chain-overlay-fallback][style*="none"])::after {
+	display: none;
+}`
 
-		/**
-		 * The text area and its 发送 row over one Session's draft. `onSent` runs once the
-		 * submission has cleared the draft; `focusKey` changing takes the caret to the end.
-		 */
-		function Editor({ useInput, inputActions, onSent, focusKey, style }) {
-			const draft = useInput(s => s.draft)
-			const attachments = useInput(s => s.attachmentIds.length)
-			const busy = useInput(s => s.phase !== 'plain')
-			const [text, setText] = React.useState(draft)
-			const area = React.useRef(null)
-			const latest = React.useRef(draft)
-			const timer = React.useRef(undefined)
-			/** Set by 发送 until the submission clears the draft. */
-			const sending = React.useRef(false)
+		// --- Which Sessions are expanded, and why --------------------------------------------
 
-			const flush = React.useCallback(() => {
-				if (timer.current === undefined) return
-				clearTimeout(timer.current)
-				timer.current = undefined
-				inputActions.setDraft(latest.current)
-			}, [inputActions])
+		/** sessionId → the reasons it is expanded ('view', 'button'). */
+		const expanded = new Map()
+		const listeners = new Set()
 
-			// Leaving (the view, the dialog, the Session) keeps what was typed.
-			React.useEffect(() => flush, [flush])
-
-			// The draft changed elsewhere: typed in the composer, or cleared by a submission.
-			// While the text area has focus its own text wins; the composer cannot be typed in then.
-			React.useEffect(() => {
-				if (sending.current && draft === '') {
-					sending.current = false
-					latest.current = ''
-					setText('')
-					onSent()
-					return
-				}
-				if (document.activeElement !== area.current && timer.current === undefined) {
-					latest.current = draft
-					setText(draft)
-				}
-			}, [draft, onSent])
-
-			React.useEffect(() => {
-				const el = area.current
-				if (el === null) return
-				el.focus()
-				el.setSelectionRange(el.value.length, el.value.length)
-			}, [focusKey])
-
-			function change(event) {
-				const value = event.target.value
-				latest.current = value
-				sending.current = false
-				setText(value)
-				clearTimeout(timer.current)
-				timer.current = setTimeout(flush, SYNC_MS)
-			}
-
-			const empty = text.trim() === '' && attachments === 0
-
-			function send() {
-				if (empty || busy) return
-				clearTimeout(timer.current)
-				timer.current = undefined
-				inputActions.setDraft(latest.current)
-				sending.current = true
-				// Submit after the editor has taken the new draft (its updates commit in a microtask).
-				setTimeout(() => { inputActions.submit() }, 0)
-			}
-
-			function keyDown(event) {
-				if (event.key !== 'Enter' || event.nativeEvent.isComposing) return
-				if (mac ? event.metaKey : event.ctrlKey) {
-					event.preventDefault()
-					send()
+		/** Mark (or unmark) every conversation body of the Session; CSS and keys follow the mark. */
+		function paint(sessionId) {
+			const on = (expanded.get(sessionId)?.size ?? 0) > 0
+			for (const body of document.querySelectorAll('[data-conversation-content]')) {
+				if (body.getAttribute('data-conversation-session') !== sessionId) continue
+				body.toggleAttribute(MARK, on)
+				const seat = body.querySelector('[data-composer-seat]')
+				if (seat !== null) {
+					if (on) seat.setAttribute('data-agent-work-hint', HINT)
+					else seat.removeAttribute('data-agent-work-hint')
 				}
 			}
-
-			const notes = [`${[...text].length} 字`]
-			if (attachments > 0) notes.push(`附件 ${attachments} 个，在会话框里管理`)
-
-			return h('div', {
-				'data-agent-work': 'long-input',
-				style: { boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: '8px', ...style },
-			},
-			h('textarea', {
-				ref: area,
-				value: text,
-				onChange: change,
-				onBlur: flush,
-				onKeyDown: keyDown,
-				placeholder: '在这里写较长的内容，比如产品需求：背景、目标、用户场景、验收标准……\n写完点“发送”，等同于在会话框里发送。',
-				spellCheck: false,
-				'aria-label': '文本输入',
-				style: {
-					flex: 1,
-					minHeight: 0,
-					resize: 'none',
-					boxSizing: 'border-box',
-					padding: '14px 16px',
-					border: '1px solid var(--dsw-alias-border-default, rgba(127,127,127,.25))',
-					borderRadius: 'var(--dsw-radius-panel, 16px)',
-					background: 'var(--dsw-specific-input-major, transparent)',
-					color: 'var(--dsw-alias-label-primary, inherit)',
-					font: 'inherit',
-					fontFamily: 'var(--dsw-font-family, inherit)',
-					fontSize: '14px',
-					lineHeight: 1.7,
-					outline: 'none',
-				},
-			}),
-			h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px' } },
-				h('span', { style: caption }, notes.join(' · ')),
-				h('span', { style: { ...caption, marginLeft: 'auto' } }, `${mac ? '⌘' : 'Ctrl'} + Enter 发送`),
-				h(ui.Button, { size: 'sm', variant: 'primary', disabled: empty || busy, 'data-action': 'long-input-send', onClick: send }, '发送')))
 		}
 
-		/** The 文本输入 view: the band above the composer, which stays below. */
-		function LongInputView({ useInput, inputActions, openView, viewRequest, completeViewRequest }) {
-			const back = React.useCallback(() => { openView('chat', VIEW) }, [openView])
+		function setReason(sessionId, reason, on) {
+			const reasons = expanded.get(sessionId) ?? new Set()
+			if (on) reasons.add(reason)
+			else reasons.delete(reason)
+			if (reasons.size === 0) expanded.delete(sessionId)
+			else expanded.set(sessionId, reasons)
+			paint(sessionId)
+			for (const listener of listeners) listener()
+		}
+
+		function useReasons(sessionId) {
+			return React.useSyncExternalStore(
+				(listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+				() => [...(expanded.get(sessionId) ?? [])].sort().join(','))
+		}
+
+		/** Put the caret at the end of the Session's composer draft. */
+		function focusComposer(sessionId) {
+			requestAnimationFrame(() => {
+				const body = document.querySelector(`[data-conversation-content][data-conversation-session="${CSS_escape(sessionId)}"]`)
+				const input = body?.querySelector('[data-composer-seat] [data-composer-input]')
+				if (!input) return
+				input.focus()
+				const range = document.createRange()
+				range.selectNodeContents(input)
+				range.collapse(false)
+				const selection = window.getSelection()
+				selection?.removeAllRanges()
+				selection?.addRange(range)
+			})
+		}
+		const CSS_escape = value => (window.CSS?.escape ? window.CSS.escape(value) : value)
+
+		// --- Keys and send detection (document-wide, only inside a marked body) -----------------
+
+		/** When the member last deleted text (any composer): a draft emptied by deleting is not a send. */
+		let deletedAt = 0
+
+		/** Enter → new line, ⌘/Ctrl+Enter → Enter, inside an expanded composer with no open menu. */
+		function onKeyDown(event) {
+			if (event.key === 'Backspace' || event.key === 'Delete') { deletedAt = Date.now(); return }
+			if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229 || !event.isTrusted) return
+			const target = event.target
+			if (!(target instanceof Element) || target.closest(`[${MARK}] [data-composer-seat] [data-composer-input]`) === null) return
+			// An @ or / menu with a highlighted row: Enter picks it. Without a highlight the
+			// composer would send; here that becomes a new line too.
+			if (document.querySelector('[data-trigger-menu] [role="listbox"][aria-activedescendant]') !== null) return
+			const accelerated = mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey
+			const plain = !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+			if (!plain && !(accelerated && !event.altKey && !event.shiftKey)) return
+			event.preventDefault()
+			event.stopPropagation()
+			target.dispatchEvent(new KeyboardEvent('keydown', {
+				key: 'Enter', code: 'Enter', keyCode: 13, which: 13, shiftKey: plain, bubbles: true, cancelable: true,
+			}))
+		}
+
+		/** Deleting by keys, cut, or an input method's own delete. */
+		function onBeforeInput(event) {
+			if (event.type === 'cut' || (typeof event.inputType === 'string' && event.inputType.startsWith('delete'))) deletedAt = Date.now()
+		}
+
+		/** Run `onSent` when an expanded composer's draft empties by a send (not by deleting it). */
+		function useSent(useInput, active, onSent) {
+			const draft = useInput(s => s.draft)
+			const previous = React.useRef(draft)
+			React.useEffect(() => {
+				const was = previous.current
+				previous.current = draft
+				if (active && was.trim() !== '' && draft === '' && Date.now() - deletedAt > 500) onSent()
+			}, [draft, active, onSent])
+		}
+
+		// --- The view and the button ----------------------------------------------------------
+
+		/** The 文本输入 view: expands the composer while selected; draws nothing itself. */
+		function LongInputView({ sessionId, useInput, openView, viewRequest, completeViewRequest }) {
+			React.useEffect(() => {
+				setReason(sessionId, 'view', true)
+				focusComposer(sessionId)
+				return () => { setReason(sessionId, 'view', false) }
+			}, [sessionId])
 			React.useEffect(() => {
 				if (viewRequest?.view === VIEW) completeViewRequest()
 			}, [viewRequest])
-			return h(Editor, {
-				useInput, inputActions, onSent: back, focusKey: viewRequest,
-				style: {
-					width: 'min(100% - 32px, var(--dsh-chat-content-width, 920px))',
-					margin: '0 auto',
-					padding: '12px 0',
-					height: 'calc(var(--dsh-conversation-viewport-height, 80vh) - var(--dsh-composer-height, 160px))',
-					minHeight: '240px',
-				},
-			})
+			const back = React.useCallback(() => { openView('chat', VIEW) }, [openView])
+			useSent(useInput, true, back)
+			return null
 		}
 
 		const expandIcon = h('svg', { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
 			h('path', { d: 'M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9' }))
+		const collapseIcon = h('svg', { viewBox: '0 0 16 16', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+			h('path', { d: 'M13.5 6.5h-4v-4M9.5 6.5 14 2M2.5 9.5h4v4M6.5 9.5 2 14' }))
 
-		/** 展开 in the composer's tool row: the same editor in a dialog. */
-		function ExpandButton({ useInput, inputActions }) {
-			const [open, setOpen] = React.useState(false)
+		/** 展开 / 收起 in the composer's tool row; hidden on the 文本输入 view, which is expanded already. */
+		function ExpandButton({ sessionId, useInput }) {
+			const reasons = useReasons(sessionId)
+			const onView = reasons.includes('view')
+			const open = reasons.includes('button')
 			const [hover, setHover] = React.useState(false)
-			const close = React.useCallback(() => { setOpen(false) }, [])
-			return h(React.Fragment, null,
-				h(ui.Tooltip, { label: '展开输入框', side: 'top', delayMs: 500 },
-					h('button', {
-						type: 'button',
-						'aria-label': '展开输入框',
-						'data-action': 'long-input-expand',
-						onClick: () => setOpen(true),
-						onMouseEnter: () => setHover(true),
-						onMouseLeave: () => setHover(false),
-						style: {
-							display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-							width: '28px', height: '28px', padding: 0, border: 'none', cursor: 'pointer',
-							borderRadius: 'var(--dsw-radius-sm, 8px)',
-							background: hover ? 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12))' : 'transparent',
-							color: 'var(--dsw-alias-label-secondary, inherit)',
-						},
-					}, expandIcon)),
-				open ? h(ui.Modal, { open: true, onClose: close, title: '文本输入', closeLabel: '收起', className: DIALOG_CLASS },
-					h(Editor, {
-						useInput, inputActions, onSent: close, focusKey: open,
-						style: { width: '100%', height: 'min(640px, 70vh)' },
-					})) : null)
+			const collapse = React.useCallback(() => { setReason(sessionId, 'button', false) }, [sessionId])
+			useSent(useInput, open, collapse)
+			// The button's reason ends with the Session (switching away collapses).
+			React.useEffect(() => () => { setReason(sessionId, 'button', false) }, [sessionId])
+			if (onView) return null
+			const label = open ? '收起输入框' : '展开输入框'
+			return h(ui.Tooltip, { label: open ? label : `${label}（${HINT}）`, side: 'top', delayMs: 500 },
+				h('button', {
+					type: 'button',
+					'aria-label': label,
+					'aria-pressed': open,
+					'data-action': 'long-input-expand',
+					onMouseDown: event => event.preventDefault(),
+					onClick: () => {
+						setReason(sessionId, 'button', !open)
+						focusComposer(sessionId)
+					},
+					onMouseEnter: () => setHover(true),
+					onMouseLeave: () => setHover(false),
+					style: {
+						display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+						width: '28px', height: '28px', padding: 0, border: 'none', cursor: 'pointer',
+						borderRadius: 'var(--dsw-radius-sm, 8px)',
+						background: hover || open ? 'var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12))' : 'transparent',
+						color: 'var(--dsw-alias-label-secondary, inherit)',
+					},
+				}, open ? collapseIcon : expandIcon))
 		}
-
-		// The shared Modal is 380px wide and takes only a class: widen this one dialog.
-		const DIALOG_CLASS = 'agent-work-long-input-dialog'
-		const DIALOG_CSS = `.${DIALOG_CLASS}.${DIALOG_CLASS} { width: min(920px, calc(100vw - 48px)); }`
 
 		const exports = {}
 		exports.inject = ['slots']
 		exports.apply = (ctx) => {
+			ctx.effect(() => {
+				const style = document.createElement('style')
+				style.textContent = STYLE
+				document.head.append(style)
+				document.addEventListener('keydown', onKeyDown, true)
+				document.addEventListener('beforeinput', onBeforeInput, true)
+				document.addEventListener('cut', onBeforeInput, true)
+				return () => {
+					style.remove()
+					document.removeEventListener('keydown', onKeyDown, true)
+					document.removeEventListener('beforeinput', onBeforeInput, true)
+					document.removeEventListener('cut', onBeforeInput, true)
+					for (const sessionId of [...expanded.keys()]) { expanded.delete(sessionId); paint(sessionId) }
+				}
+			}, 'agent-work: 文本输入 styles and keys')
 			ctx.effect(() => ctx.slots.inject('conversation.view', () => ctx.slots.register({
 				name: 'conversation.view', id: VIEW, order: 20, label: () => '文本输入',
 			}, LongInputView)), 'agent-work: 文本输入 view')
-			ctx.effect(() => {
-				const style = document.createElement('style')
-				style.textContent = DIALOG_CSS
-				document.head.append(style)
-				return () => { style.remove() }
-			}, 'agent-work: 文本输入 dialog width')
 			ctx.effect(() => ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
 				name: 'conversation.input.right', id: 'agent-work-long-input-expand', order: 100,
 			}, ExpandButton)), 'agent-work: 文本输入 expand button')
