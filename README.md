@@ -89,6 +89,8 @@ AGENT_WORK_DSH=<装有 dsh 的目录> AGENT_WORK_FRP_DIR=<frp 发行包目录> n
 ```bash
 # 模拟器构建（不签名）
 xcodebuild -project mobile/ios/GLWork.xcodeproj -scheme GLWork -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+# 装到数据线连着的 iPhone 上并打开（调试版，用 Xcode 登录的开发者账号签名；需要 Xcode 支持手机的 iOS 版本、手机已登记并打开开发者模式）
+pnpm try:ios                       # 连着多台时加 --device <名称或 UDID>
 # 上传 TestFlight：用 overlay/apps/desktop/.env.macos 里的 App Store Connect API Key，云端托管签名，构建号取 UTC 时间
 mobile/ios/testflight.sh
 ```
