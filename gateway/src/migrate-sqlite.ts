@@ -2,8 +2,11 @@
  * One-time move of the company service's data from its SQLite file (schema 7
  * or 8) into PostgreSQL:
  *
- *   DATABASE_URL=postgres://… node gateway/src/migrate-sqlite.ts <gateway.db> [--force]
+ *   DATABASE_URL=postgres://… node gateway/src/migrate-sqlite.ts <gateway.db> [--force | --once]
  *   pnpm --filter @agent-work/gateway migrate-sqlite <gateway.db>
+ *
+ * --once is for running it before every start of the service (an init container):
+ * a target that already has members was migrated, and is left alone with exit 0.
  *
  * (AGENT_WORK_DATA_DIR instead of DATABASE_URL writes into a PGlite directory.)
  * The SQLite file is opened read-only. The target is migrated to the current
@@ -132,10 +135,10 @@ export async function copySqlite(source: DatabaseSync, target: Sql, options: { f
 
 async function main(): Promise<number> {
   if (process.env.AGENT_WORK_ENV_FILE !== undefined) process.loadEnvFile(process.env.AGENT_WORK_ENV_FILE)
-  const { positionals, values } = parseArgs({ allowPositionals: true, options: { force: { type: 'boolean' } } })
+  const { positionals, values } = parseArgs({ allowPositionals: true, options: { force: { type: 'boolean' }, once: { type: 'boolean' } } })
   const file = positionals[0]
-  if (file === undefined || positionals.length > 1) {
-    console.error('usage: DATABASE_URL=postgres://… node gateway/src/migrate-sqlite.ts <gateway.db> [--force]')
+  if (file === undefined || positionals.length > 1 || (values.force === true && values.once === true)) {
+    console.error('usage: DATABASE_URL=postgres://… node gateway/src/migrate-sqlite.ts <gateway.db> [--force | --once]')
     return 2
   }
   const databaseUrl = process.env.DATABASE_URL || process.env.AGENT_WORK_DATABASE_URL || undefined
@@ -143,6 +146,19 @@ async function main(): Promise<number> {
   if (databaseUrl === undefined && dataDir === undefined) {
     console.error('migrate-sqlite: set DATABASE_URL (PostgreSQL) or AGENT_WORK_DATA_DIR (PGlite) to say where the data goes')
     return 2
+  }
+  if (values.once === true) {
+    const target = await openDatabase(databaseUrl === undefined ? { dataDir } : { databaseUrl })
+    try {
+      await migrate(target)
+      const members = await count(target, 'members')
+      if (members > 0) {
+        console.log(`migrate-sqlite: the target already has ${String(members)} members; migrated before, nothing to do`)
+        return 0
+      }
+    } finally {
+      await target.close()
+    }
   }
   const source = new DatabaseSync(file, { readOnly: true })
   const target = await openDatabase(databaseUrl === undefined ? { dataDir } : { databaseUrl })

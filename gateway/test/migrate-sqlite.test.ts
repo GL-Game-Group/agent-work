@@ -186,5 +186,11 @@ describe('copying the SQLite file into PostgreSQL', () => {
     assert.doesNotMatch(stdout, /sk-shared|v1:|oss-secret/u)
     const again = await promisify(execFile)(process.execPath, [script, file], { env }).then(() => 0, (error: { code: number; stderr: string }) => { assert.match(error.stderr, /--force/u); return error.code })
     assert.equal(again, 1, 'a second run into the same target is refused')
+    // Before every start of the service (--once): copies the first time, then leaves the target alone.
+    const once = await promisify(execFile)(process.execPath, [script, file, '--once'], { env })
+    assert.match(once.stdout, /migrated before, nothing to do/u)
+    const fresh = { ...env, AGENT_WORK_DATA_DIR: join(dir, 'pglite-once') }
+    assert.match((await promisify(execFile)(process.execPath, [script, file, '--once'], { env: fresh })).stdout, /every table copied/u)
+    assert.match((await promisify(execFile)(process.execPath, [script, file, '--once'], { env: fresh })).stdout, /nothing to do/u)
   })
 })
