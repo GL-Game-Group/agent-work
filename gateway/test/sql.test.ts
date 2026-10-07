@@ -91,6 +91,25 @@ function behaves(name: string, open: () => Promise<{ sql: Sql; stop: () => Promi
   })
 }
 
+describe('usage per day', () => {
+  const zone = process.env.TZ
+  after(() => { if (zone === undefined) delete process.env.TZ; else process.env.TZ = zone })
+
+  it('counts calendar days in the service\'s own time zone, as SQLite\'s localtime did', async () => {
+    const store = await Store.open(await openPglite())
+    const at = Date.parse('2026-10-07T17:00:00Z')
+    await store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin' })
+    const usage = { model: 'm', status: 200, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0 }
+    await new Store(store.sql, () => at).recordUsage('alice', 'c', usage, null)
+    process.env.TZ = 'Asia/Shanghai'
+    assert.deepEqual(await store.dailyUsageSince(0), [{ day: '2026-10-08', requests: 1, inputTokens: 10, outputTokens: 5 }])
+    assert.deepEqual(await store.dailyVendorUsageSince(0), [{ day: '2026-10-08', vendor: 'deepseek', requests: 1, tokens: 15 }], 'no vendor counts as DeepSeek')
+    process.env.TZ = 'UTC'
+    assert.deepEqual((await store.dailyUsageSince(0)).map(d => d.day), ['2026-10-07'])
+    await store.close()
+  })
+})
+
 behaves('PGlite', async () => {
   const sql = await openPglite()
   return { sql, stop: () => sql.close() }
