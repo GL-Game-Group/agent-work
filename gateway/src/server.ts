@@ -461,6 +461,26 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     return { version: 2, settings, credentials, cli, accounts, public: await vendors.publicValues() }
   }
 
+  /**
+   * The company models a member's GL Work (on Orca) may run its coding CLIs on: every key vendor
+   * the member holds an active key for, with the gateway address to call it at (the device token
+   * is the key there) and the models offered.
+   */
+  async function memberModels(member: Member) {
+    const offered: { vendor: string; name: string; protocol: 'anthropic' | 'openai'; baseUrl: string; models: { id: string; name: string }[] }[] = []
+    for (const assignment of await vendors.assignments(member.name)) {
+      const vendor = await vendors.vendor(assignment.vendor)
+      if (vendor === undefined || vendor.auth !== 'key' || vendor.type === 'voice' || assignment.apiKey === null) continue
+      if ((vendor.protocol !== 'anthropic' && vendor.protocol !== 'openai') || vendor.models.length === 0) continue
+      if ((await vendors.key(assignment.apiKey))?.status !== 'active') continue
+      offered.push({
+        vendor: vendor.id, name: vendor.name, protocol: vendor.protocol, baseUrl: `${config.publicOrigin}${LLM_PREFIX}${vendor.id}`,
+        models: vendor.models.map(m => ({ id: m.id, name: m.name ?? m.id })),
+      })
+    }
+    return { vendors: offered }
+  }
+
   /** Routes under /agent-work/, answered by the gateway itself. */
   async function ownRoute(req: IncomingMessage, res: ServerResponse, url: URL, auth: Authentication): Promise<void> {
     if (url.pathname.startsWith(LLM_PREFIX)) { await llm(req, res, url); return }
@@ -555,6 +575,11 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
           ? { ...SECURITY_HEADERS, 'set-cookie': `${sessionCookie}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}` }
           : SECURITY_HEADERS)
         res.end()
+        return
+      // GL Work on Orca: the company models its CLIs may use (device tokens only).
+      case `GET ${PREFIX}models`:
+        if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
+        json(res, 200, await memberModels(member))
         return
       case `GET ${PREFIX}config`:
         // What a Host applies: device tokens only (it names the device token as the model key).
