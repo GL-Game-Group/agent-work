@@ -67,10 +67,10 @@ function role(value: unknown): Role {
   return value
 }
 
-function optionalMember(store: Store, value: unknown): string | null {
+async function optionalMember(store: Store, value: unknown): Promise<string | null> {
   if (value === undefined || value === null || value === '') return null
   const name = String(value)
-  if (store.member(name) === undefined) throw new Refusal(404, `没有成员 ${name}`)
+  if (await store.member(name) === undefined) throw new Refusal(404, `没有成员 ${name}`)
   return name
 }
 
@@ -82,12 +82,15 @@ export interface IssuedKey {
   createdAt: number
 }
 
-function issueInternalKey(store: Store, member: string, label: unknown): IssuedKey {
+async function issueInternalKey(store: Store, member: string, label: unknown): Promise<IssuedKey> {
   const name = typeof label === 'string' ? label.trim() : ''
   if (name === '' || name.length > 40) throw new Refusal(400, '请填写用途（最多 40 个字符）')
-  if (store.listCredentials(member).filter(c => c.kind === 'key').length >= MAX_INTERNAL_KEYS) throw new Refusal(409, '内部 Key 太多了，先吊销不用的')
-  const { credential, token } = store.issueCredential(member, 'key', name, INTERNAL_KEY_TTL_MS)
-  return { id: credential.id, label: credential.label, token, createdAt: credential.createdAt }
+  // Counted and issued in one transaction, so concurrent requests cannot pass the limit together.
+  return store.sql.transaction(async () => {
+    if ((await store.listCredentials(member)).filter(c => c.kind === 'key').length >= MAX_INTERNAL_KEYS) throw new Refusal(409, '内部 Key 太多了，先吊销不用的')
+    const { credential, token } = await store.issueCredential(member, 'key', name, INTERNAL_KEY_TTL_MS)
+    return { id: credential.id, label: credential.label, token, createdAt: credential.createdAt }
+  })
 }
 
 function deviceView(c: { id: string; member: string; kind: string; label: string; createdAt: number; lastUsedAt: number | null; expiresAt: number; lastIp: string | null }) {
@@ -119,29 +122,34 @@ export class AdminService {
     this.now = deps.now ?? Date.now
   }
 
-  private audit(actor: Actor, action: string, target: string | null, detail: string | null = null): void {
-    this.store.audit({ actor: actor.member.name, action, target, detail, ip: actor.ip })
+  private async audit(actor: Actor, action: string, target: string | null, detail: string | null = null): Promise<void> {
+    await this.store.audit({ actor: actor.member.name, action, target, detail, ip: actor.ip })
   }
 
-  private member(name: string): Member {
-    const found = this.store.member(name)
+  /** An operation and its audit entry as one transaction (the rules read state, then write it). */
+  private atomically<T>(fn: () => Promise<T>): Promise<T> {
+    return this.store.sql.transaction(fn)
+  }
+
+  private async member(name: string): Promise<Member> {
+    const found = await this.store.member(name)
     if (found === undefined) throw new Refusal(404, `没有成员 ${name}`)
     return found
   }
 
   /** Refuse changes that would leave no active administrator, or lock the caller out. */
-  private keepAnAdmin(actor: Actor, target: Member, after: { role?: Role; status?: 'active' | 'disabled'; deleted?: boolean }): void {
+  private async keepAnAdmin(actor: Actor, target: Member, after: { role?: Role; status?: 'active' | 'disabled'; deleted?: boolean }): Promise<void> {
     const losesAdmin = target.role === 'admin' && target.status === 'active'
       && (after.deleted === true || after.role === 'member' || after.status === 'disabled')
     if (!losesAdmin) return
     if (target.name === actor.member.name) throw new Refusal(409, '不能停用、降级或删除自己的管理员账号')
-    if (this.store.listMembers().filter(m => m.role === 'admin' && m.status === 'active').length <= 1) throw new Refusal(409, '至少需要保留一个有效的管理员')
+    if ((await this.store.listMembers()).filter(m => m.role === 'admin' && m.status === 'active').length <= 1) throw new Refusal(409, '至少需要保留一个有效的管理员')
   }
 
   // Overview and records
 
-  overview() {
-    const week = this.store.usageSince(this.now() - 7 * DAY_MS)
+  async overview() {
+    const week = await this.store.usageSince(this.now() - 7 * DAY_MS)
     return {
       productName: this.config.productName ?? 'GL Work',
       publicOrigin: this.config.publicOrigin,
@@ -151,40 +159,39 @@ export class AdminService {
         requests: week.reduce((sum, row) => sum + row.requests, 0),
         tokens: week.reduce((sum, row) => sum + row.inputTokens + row.outputTokens, 0),
       },
-      daily: this.store.dailyVendorUsageSince(this.now() - 14 * DAY_MS),
+      daily: await this.store.dailyVendorUsageSince(this.now() - 14 * DAY_MS),
     }
   }
 
-  usage(days: number) {
+  async usage(days: number) {
     if (!(USAGE_WINDOWS as readonly number[]).includes(days)) throw new Refusal(400, '只支持 1、7、30、90 天')
     const since = this.now() - days * DAY_MS
-    const totals = new Map(this.store.usageSince(since).map(row => [row.member, row]))
-    return {
-      days,
-      daily: this.store.dailyVendorUsageSince(since),
-      members: this.store.listMembers().map(m => ({
-        member: m.name, displayName: m.displayName,
-        requests: totals.get(m.name)?.requests ?? 0,
-        inputTokens: totals.get(m.name)?.inputTokens ?? 0,
-        outputTokens: totals.get(m.name)?.outputTokens ?? 0,
-        cacheReadTokens: totals.get(m.name)?.cacheReadTokens ?? 0,
-      })),
-      byVendor: this.store.memberVendorUsageSince(since),
-      keys: this.keys().map(k => ({ id: k.id, vendor: k.vendor, label: k.label, last4: k.last4, ...this.store.keyUsageSince(k.id, since) })),
-    }
+    const totals = new Map((await this.store.usageSince(since)).map(row => [row.member, row]))
+    const daily = await this.store.dailyVendorUsageSince(since)
+    const members = (await this.store.listMembers()).map(m => ({
+      member: m.name, displayName: m.displayName,
+      requests: totals.get(m.name)?.requests ?? 0,
+      inputTokens: totals.get(m.name)?.inputTokens ?? 0,
+      outputTokens: totals.get(m.name)?.outputTokens ?? 0,
+      cacheReadTokens: totals.get(m.name)?.cacheReadTokens ?? 0,
+    }))
+    const byVendor = await this.store.memberVendorUsageSince(since)
+    const keys = []
+    for (const k of await this.keys()) keys.push({ id: k.id, vendor: k.vendor, label: k.label, last4: k.last4, ...await this.store.keyUsageSince(k.id, since) })
+    return { days, daily, members, byVendor, keys }
   }
 
-  auditLog(limit = 200) {
+  async auditLog(limit = 200) {
     return this.store.recentAudit(Math.min(Math.max(limit, 1), 1000))
   }
 
   // Members
 
-  members() {
-    const credentials = new Map(this.store.credentialSummary().map(row => [row.member, row]))
-    const usage = new Map(this.store.usageSince(this.now() - 30 * DAY_MS).map(row => [row.member, row]))
-    const assignments = this.vendors.assignments()
-    return this.store.listMembers().map(m => ({
+  async members() {
+    const credentials = new Map((await this.store.credentialSummary()).map(row => [row.member, row]))
+    const usage = new Map((await this.store.usageSince(this.now() - 30 * DAY_MS)).map(row => [row.member, row]))
+    const assignments = await this.vendors.assignments()
+    return (await this.store.listMembers()).map(m => ({
       ...m,
       devices: credentials.get(m.name)?.devices ?? 0,
       lastUsedAt: credentials.get(m.name)?.lastUsedAt ?? null,
@@ -204,119 +211,130 @@ export class AdminService {
     const newRole = role(input.role ?? 'member')
     const memberTeam = team(input.team)
     const name2 = displayName(input.displayName, name)
-    if (this.store.member(name) !== undefined) throw new Refusal(409, `成员 ${name} 已存在`)
+    if (await this.store.member(name) !== undefined) throw new Refusal(409, `成员 ${name} 已存在`)
     const enabled = input.vendors ?? []
     if (!Array.isArray(enabled)) throw new Refusal(400, '厂商列表格式不正确')
-    for (const entry of enabled as unknown[]) this.vendors.mustVendor(String(typeof entry === 'string' ? entry : (entry as { vendor?: unknown }).vendor ?? ''))
+    for (const entry of enabled as unknown[]) await this.vendors.mustVendor(String(typeof entry === 'string' ? entry : (entry as { vendor?: unknown }).vendor ?? ''))
     let user
     try { user = await this.github.lookup(login) } catch { throw new Refusal(404, `GitHub 上找不到用户 ${login}`) }
-    const holder = this.store.memberByGithubId(user.id)
-    if (holder !== undefined) throw new Refusal(409, `GitHub 账号 ${user.login} 已属于成员 ${holder.name}`)
-    this.store.addMember({
-      name, githubId: user.id, githubLogin: user.login, role: newRole, displayName: name2, team: memberTeam,
-      ...typeof input.tunnels === 'boolean' ? { tunnels: input.tunnels } : {},
+    const found = user
+    return this.atomically(async () => {
+      const holder = await this.store.memberByGithubId(found.id)
+      if (holder !== undefined) throw new Refusal(409, `GitHub 账号 ${found.login} 已属于成员 ${holder.name}`)
+      await this.store.addMember({
+        name, githubId: found.id, githubLogin: found.login, role: newRole, displayName: name2, team: memberTeam,
+        ...typeof input.tunnels === 'boolean' ? { tunnels: input.tunnels } : {},
+      })
+      await this.audit(actor, 'member-add', name, `github ${found.login} (${String(found.id)}), ${newRole}`)
+      if (enabled.length > 0) {
+        const result = await this.vendors.setMemberVendors(name, enabled)
+        await this.audit(actor, 'member-vendors', name, result.map(a => `${a.vendor}:${a.mode}`).join(', '))
+      }
+      return this.member(name)
     })
-    this.audit(actor, 'member-add', name, `github ${user.login} (${String(user.id)}), ${newRole}`)
-    if (enabled.length > 0) {
-      const result = this.vendors.setMemberVendors(name, enabled)
-      this.audit(actor, 'member-vendors', name, result.map(a => `${a.vendor}:${a.mode}`).join(', '))
-    }
+  }
+
+  async setStatus(actor: Actor, name: string, status: unknown): Promise<Member> {
+    return this.atomically(async () => {
+      const target = await this.member(name)
+      if (status !== 'active' && status !== 'disabled') throw new Refusal(400, '状态只能是正常或停用')
+      await this.keepAnAdmin(actor, target, { status })
+      await this.store.setStatus(name, status)
+      await this.audit(actor, status === 'disabled' ? 'member-disable' : 'member-enable', name)
+      return this.member(name)
+    })
+  }
+
+  async setRole(actor: Actor, name: string, value: unknown): Promise<Member> {
+    return this.atomically(async () => {
+      const target = await this.member(name)
+      const next = role(value)
+      await this.keepAnAdmin(actor, target, { role: next })
+      await this.store.setRole(name, next)
+      await this.audit(actor, 'member-role', name, next)
+      return this.member(name)
+    })
+  }
+
+  async deleteMember(actor: Actor, name: string): Promise<void> {
+    await this.atomically(async () => {
+      const target = await this.member(name)
+      await this.keepAnAdmin(actor, target, { deleted: true })
+      await this.store.deleteMember(name)
+      await this.vendors.rebalance()
+      await this.audit(actor, 'member-delete', name, `github ${target.githubLogin}`)
+    })
+  }
+
+  async setProfile(actor: Actor, name: string, input: Record<string, unknown>): Promise<Member> {
+    const target = await this.member(name)
+    await this.store.setProfile(name, { displayName: displayName(input.displayName, target.displayName), ...'team' in input ? { team: team(input.team) } : {} })
+    await this.audit(actor, 'member-profile', name)
     return this.member(name)
   }
 
-  setStatus(actor: Actor, name: string, status: unknown): Member {
-    const target = this.member(name)
-    if (status !== 'active' && status !== 'disabled') throw new Refusal(400, '状态只能是正常或停用')
-    this.keepAnAdmin(actor, target, { status })
-    this.store.setStatus(name, status)
-    this.audit(actor, status === 'disabled' ? 'member-disable' : 'member-enable', name)
-    return this.member(name)
-  }
-
-  setRole(actor: Actor, name: string, value: unknown): Member {
-    const target = this.member(name)
-    const next = role(value)
-    this.keepAnAdmin(actor, target, { role: next })
-    this.store.setRole(name, next)
-    this.audit(actor, 'member-role', name, next)
-    return this.member(name)
-  }
-
-  deleteMember(actor: Actor, name: string): void {
-    const target = this.member(name)
-    this.keepAnAdmin(actor, target, { deleted: true })
-    this.store.deleteMember(name)
-    this.vendors.rebalance()
-    this.audit(actor, 'member-delete', name, `github ${target.githubLogin}`)
-  }
-
-  setProfile(actor: Actor, name: string, input: Record<string, unknown>): Member {
-    const target = this.member(name)
-    this.store.setProfile(name, { displayName: displayName(input.displayName, target.displayName), ...'team' in input ? { team: team(input.team) } : {} })
-    this.audit(actor, 'member-profile', name)
-    return this.member(name)
-  }
-
-  setTunnelGrants(actor: Actor, name: string, input: { tunnels?: unknown; ssh?: unknown }): Member {
-    this.member(name)
+  async setTunnelGrants(actor: Actor, name: string, input: { tunnels?: unknown; ssh?: unknown }): Promise<Member> {
+    await this.member(name)
     const grants: { tunnels?: boolean; ssh?: boolean } = {}
     if (typeof input.tunnels === 'boolean') grants.tunnels = input.tunnels
     if (typeof input.ssh === 'boolean') grants.ssh = input.ssh
-    this.store.setTunnelGrants(name, grants)
-    this.audit(actor, 'member-tunnels', name, Object.entries(grants).map(([k, v]) => `${k} ${v ? 'on' : 'off'}`).join(', '))
+    await this.store.setTunnelGrants(name, grants)
+    await this.audit(actor, 'member-tunnels', name, Object.entries(grants).map(([k, v]) => `${k} ${v ? 'on' : 'off'}`).join(', '))
     return this.member(name)
   }
 
-  setMemberVendors(actor: Actor, name: string, entries: unknown) {
-    this.member(name)
-    const result = this.vendors.setMemberVendors(name, entries)
-    this.audit(actor, 'member-vendors', name, result.map(a => `${a.vendor}:${a.mode}`).join(', ') || 'none')
+  async setMemberVendors(actor: Actor, name: string, entries: unknown) {
+    await this.member(name)
+    const result = await this.vendors.setMemberVendors(name, entries)
+    await this.audit(actor, 'member-vendors', name, result.map(a => `${a.vendor}:${a.mode}`).join(', ') || 'none')
     return result
   }
 
   /** Enable one vendor for a member or change how they reach it, leaving their other vendors alone. */
-  assign(actor: Actor, name: string, vendor: string, input: { mode?: unknown; apiKey?: unknown; cliAccount?: unknown }) {
-    this.member(name)
-    const result = this.vendors.assign(name, vendor, input)
-    this.audit(actor, 'member-assign', name, `${vendor}:${result.mode}`)
+  async assign(actor: Actor, name: string, vendor: string, input: { mode?: unknown; apiKey?: unknown; cliAccount?: unknown }) {
+    await this.member(name)
+    const result = await this.vendors.assign(name, vendor, input)
+    await this.audit(actor, 'member-assign', name, `${vendor}:${result.mode}`)
     return result
   }
 
-  unassign(actor: Actor, name: string, vendor: string): void {
-    this.member(name)
-    this.vendors.setMemberVendors(name, this.vendors.assignments(name).filter(a => a.vendor !== vendor).map(({ vendor: v, mode }) => ({ vendor: v, mode })))
-    this.audit(actor, 'member-unassign', name, vendor)
+  async unassign(actor: Actor, name: string, vendor: string): Promise<void> {
+    await this.member(name)
+    await this.atomically(async () => {
+      await this.vendors.setMemberVendors(name, (await this.vendors.assignments(name)).filter(a => a.vendor !== vendor).map(({ vendor: v, mode }) => ({ vendor: v, mode })))
+      await this.audit(actor, 'member-unassign', name, vendor)
+    })
   }
 
-  issueKey(actor: Actor, name: string, label: unknown): IssuedKey {
-    const target = this.member(name)
+  async issueKey(actor: Actor, name: string, label: unknown): Promise<IssuedKey> {
+    const target = await this.member(name)
     if (target.status !== 'active') throw new Refusal(409, '成员已停用')
-    const issued = issueInternalKey(this.store, name, label)
-    this.audit(actor, 'key-issue', issued.id, `${name} ${issued.label}`)
+    const issued = await issueInternalKey(this.store, name, label)
+    await this.audit(actor, 'key-issue', issued.id, `${name} ${issued.label}`)
     return issued
   }
 
   // Devices: every credential, each belonging to a member
 
-  devices(member?: string): DeviceView[] {
-    return this.store.listCredentials(member).map(deviceView)
+  async devices(member?: string): Promise<DeviceView[]> {
+    return (await this.store.listCredentials(member)).map(deviceView)
   }
 
-  revokeDevice(actor: Actor, id: string): void {
-    const credential = this.store.credential(id)
+  async revokeDevice(actor: Actor, id: string): Promise<void> {
+    const credential = await this.store.credential(id)
     if (credential === undefined || credential.revokedAt !== null) throw new Refusal(404, '设备不存在或已吊销')
-    this.store.revokeCredential(id)
-    this.audit(actor, 'credential-revoke', id, `${credential.member} ${credential.kind} ${credential.label}`)
+    await this.store.revokeCredential(id)
+    await this.audit(actor, 'credential-revoke', id, `${credential.member} ${credential.kind} ${credential.label}`)
   }
 
   // Vendors and models
 
-  vendorList() {
-    const keys = this.vendors.listKeys()
-    const accounts = this.vendors.listAccounts()
-    const assignments = this.vendors.assignments()
-    const usage = new Map(this.store.vendorUsageSince(this.now() - 30 * DAY_MS).map(row => [row.vendor, row.tokens]))
-    return this.vendors.listVendors().map(v => ({
+  async vendorList() {
+    const keys = await this.vendors.listKeys()
+    const accounts = await this.vendors.listAccounts()
+    const assignments = await this.vendors.assignments()
+    const usage = new Map((await this.store.vendorUsageSince(this.now() - 30 * DAY_MS)).map(row => [row.vendor, row.tokens]))
+    return (await this.vendors.listVendors()).map(v => ({
       ...v,
       keys: keys.filter(k => k.vendor === v.id).length,
       activeKeys: keys.filter(k => k.vendor === v.id && k.status === 'active').length,
@@ -328,41 +346,41 @@ export class AdminService {
     }))
   }
 
-  addVendor(actor: Actor, input: Record<string, unknown>) {
-    const vendor = this.vendors.addVendor(input)
-    this.audit(actor, 'vendor-add', vendor.id, `${vendor.name} ${vendor.type}/${vendor.auth}${vendor.baseUrl === null ? '' : ` ${vendor.baseUrl}`}`)
+  async addVendor(actor: Actor, input: Record<string, unknown>) {
+    const vendor = await this.vendors.addVendor(input)
+    await this.audit(actor, 'vendor-add', vendor.id, `${vendor.name} ${vendor.type}/${vendor.auth}${vendor.baseUrl === null ? '' : ` ${vendor.baseUrl}`}`)
     return vendor
   }
 
-  updateVendor(actor: Actor, id: string, input: Record<string, unknown>) {
-    const vendor = this.vendors.updateVendor(id, input)
-    this.audit(actor, 'vendor-update', id, `${vendor.name}${vendor.baseUrl === null ? '' : ` ${vendor.baseUrl}`}`)
+  async updateVendor(actor: Actor, id: string, input: Record<string, unknown>) {
+    const vendor = await this.vendors.updateVendor(id, input)
+    await this.audit(actor, 'vendor-update', id, `${vendor.name}${vendor.baseUrl === null ? '' : ` ${vendor.baseUrl}`}`)
     return vendor
   }
 
-  deleteVendor(actor: Actor, id: string): void {
-    this.vendors.deleteVendor(id)
-    this.audit(actor, 'vendor-delete', id)
+  async deleteVendor(actor: Actor, id: string): Promise<void> {
+    await this.vendors.deleteVendor(id)
+    await this.audit(actor, 'vendor-delete', id)
   }
 
   async refreshCatalog(actor: Actor, id: string) {
     const vendor = await this.vendors.refreshCatalog(id)
-    this.audit(actor, 'vendor-catalog', id, `${String(vendor.catalog.length)} models listed`)
+    await this.audit(actor, 'vendor-catalog', id, `${String(vendor.catalog.length)} models listed`)
     return vendor
   }
 
-  setModels(actor: Actor, id: string, models: unknown) {
-    const vendor = this.vendors.setModels(id, models)
-    this.audit(actor, 'vendor-models', id, vendor.models.map(m => m.id).join(', ') || 'none')
+  async setModels(actor: Actor, id: string, models: unknown) {
+    const vendor = await this.vendors.setModels(id, models)
+    await this.audit(actor, 'vendor-models', id, vendor.models.map(m => m.id).join(', ') || 'none')
     return vendor
   }
 
   // API keys
 
-  keys() {
-    const assignments = this.vendors.assignments()
-    const usage = new Map(this.store.usageByKeySince(this.now() - 30 * DAY_MS).map(row => [row.apiKey, row]))
-    return this.vendors.listKeys().map(k => ({
+  async keys() {
+    const assignments = await this.vendors.assignments()
+    const usage = new Map((await this.store.usageByKeySince(this.now() - 30 * DAY_MS)).map(row => [row.apiKey, row]))
+    return (await this.vendors.listKeys()).map(k => ({
       ...k,
       members: assignments.filter(a => a.apiKey === k.id).map(a => a.member),
       requests30d: usage.get(k.id)?.requests ?? 0,
@@ -370,119 +388,119 @@ export class AdminService {
     }))
   }
 
-  addKey(actor: Actor, input: Record<string, unknown>) {
-    const holder = optionalMember(this.store, input.member)
-    const key = this.vendors.addKey(String(input.vendor ?? ''), input.label, input.key, input.mode ?? 'shared', holder)
-    this.audit(actor, 'key-add', key.id, `${key.vendor} ${key.label} …${key.last4} ${key.mode}${holder === null ? '' : ` → ${holder}`}`)
+  async addKey(actor: Actor, input: Record<string, unknown>) {
+    const holder = await optionalMember(this.store, input.member)
+    const key = await this.vendors.addKey(String(input.vendor ?? ''), input.label, input.key, input.mode ?? 'shared', holder)
+    await this.audit(actor, 'key-add', key.id, `${key.vendor} ${key.label} …${key.last4} ${key.mode}${holder === null ? '' : ` → ${holder}`}`)
     return key
   }
 
-  setKeyStatus(actor: Actor, id: string, status: unknown) {
-    const key = this.vendors.setKeyStatus(id, status)
-    this.audit(actor, key.status === 'active' ? 'key-enable' : 'key-disable', id, `${key.vendor} ${key.label}`)
+  async setKeyStatus(actor: Actor, id: string, status: unknown) {
+    const key = await this.vendors.setKeyStatus(id, status)
+    await this.audit(actor, key.status === 'active' ? 'key-enable' : 'key-disable', id, `${key.vendor} ${key.label}`)
     return key
   }
 
-  deleteKey(actor: Actor, id: string): void {
-    const key = this.vendors.deleteKey(id)
-    this.audit(actor, 'key-delete', id, `${key.vendor} ${key.label} …${key.last4}`)
+  async deleteKey(actor: Actor, id: string): Promise<void> {
+    const key = await this.vendors.deleteKey(id)
+    await this.audit(actor, 'key-delete', id, `${key.vendor} ${key.label} …${key.last4}`)
   }
 
   // Subscriptions and accounts
 
-  subscriptions() {
+  async subscriptions() {
     return this.vendors.listSubscriptions()
   }
 
-  addSubscription(actor: Actor, input: Record<string, unknown>) {
-    const sub = this.vendors.addSubscription(input)
-    this.audit(actor, 'subscription-add', sub.id, `${sub.vendor} ${sub.plan} × ${String(sub.seats)}`)
+  async addSubscription(actor: Actor, input: Record<string, unknown>) {
+    const sub = await this.vendors.addSubscription(input)
+    await this.audit(actor, 'subscription-add', sub.id, `${sub.vendor} ${sub.plan} × ${String(sub.seats)}`)
     return sub
   }
 
-  updateSubscription(actor: Actor, id: string, input: Record<string, unknown>) {
-    const sub = this.vendors.updateSubscription(id, input)
-    this.audit(actor, 'subscription-update', id, `${sub.plan} × ${String(sub.seats)}`)
+  async updateSubscription(actor: Actor, id: string, input: Record<string, unknown>) {
+    const sub = await this.vendors.updateSubscription(id, input)
+    await this.audit(actor, 'subscription-update', id, `${sub.plan} × ${String(sub.seats)}`)
     return sub
   }
 
-  deleteSubscription(actor: Actor, id: string): void {
-    const sub = this.vendors.deleteSubscription(id)
-    this.audit(actor, 'subscription-delete', id, `${sub.vendor} ${sub.plan}`)
+  async deleteSubscription(actor: Actor, id: string): Promise<void> {
+    const sub = await this.vendors.deleteSubscription(id)
+    await this.audit(actor, 'subscription-delete', id, `${sub.vendor} ${sub.plan}`)
   }
 
-  accounts() {
-    const holders = new Map(this.vendors.assignments().filter(a => a.cliAccount !== null).map(a => [a.cliAccount, a.member]))
-    return this.vendors.listAccounts().map(a => ({ ...a, member: holders.get(a.id) ?? null }))
+  async accounts() {
+    const holders = new Map((await this.vendors.assignments()).filter(a => a.cliAccount !== null).map(a => [a.cliAccount, a.member]))
+    return (await this.vendors.listAccounts()).map(a => ({ ...a, member: holders.get(a.id) ?? null }))
   }
 
-  addAccount(actor: Actor, input: Record<string, unknown>) {
-    const holder = optionalMember(this.store, input.member)
-    const account = this.vendors.addAccount(String(input.subscription ?? input.vendor ?? ''), input.account, input.note, holder)
-    this.audit(actor, 'account-add', account.id, `${account.vendor} ${account.account}${holder === null ? '' : ` → ${holder}`}`)
+  async addAccount(actor: Actor, input: Record<string, unknown>) {
+    const holder = await optionalMember(this.store, input.member)
+    const account = await this.vendors.addAccount(String(input.subscription ?? input.vendor ?? ''), input.account, input.note, holder)
+    await this.audit(actor, 'account-add', account.id, `${account.vendor} ${account.account}${holder === null ? '' : ` → ${holder}`}`)
     return account
   }
 
-  releaseAccount(actor: Actor, id: string): string | null {
-    const account = this.vendors.account(id)
+  async releaseAccount(actor: Actor, id: string): Promise<string | null> {
+    const account = await this.vendors.account(id)
     if (account === undefined) throw new Refusal(404, '账号不存在')
-    const from = this.vendors.releaseAccount(id)
-    this.audit(actor, 'account-release', id, `${account.account}${from === null ? '' : ` ← ${from}`}`)
+    const from = await this.vendors.releaseAccount(id)
+    await this.audit(actor, 'account-release', id, `${account.account}${from === null ? '' : ` ← ${from}`}`)
     return from
   }
 
-  deleteAccount(actor: Actor, id: string): void {
-    const account = this.vendors.deleteAccount(id)
-    this.audit(actor, 'account-delete', account.id, `${account.vendor} ${account.account}`)
+  async deleteAccount(actor: Actor, id: string): Promise<void> {
+    const account = await this.vendors.deleteAccount(id)
+    await this.audit(actor, 'account-delete', account.id, `${account.vendor} ${account.account}`)
   }
 
   // Plugin catalog
 
-  plugins() {
-    return { plugins: this.catalog.list(), installs: this.catalog.installs() }
+  async plugins() {
+    return { plugins: await this.catalog.list(), installs: await this.catalog.installs() }
   }
 
   /** Download and read a package before registering it: what the administrator is about to publish. */
   async inspectPlugin(url: unknown): Promise<PluginPackage & { registered: string | null }> {
     const pkg = await fetchPackage(packageUrl(url), this.fetch)
-    return { ...pkg, registered: this.catalog.get(pkg.name)?.version ?? null }
+    return { ...pkg, registered: (await this.catalog.get(pkg.name))?.version ?? null }
   }
 
   async registerPlugin(actor: Actor, input: Record<string, unknown>) {
     const url = packageUrl(input.url)
     const meta = pluginMeta(input)
     const pkg = await fetchPackage(url, this.fetch)
-    if (this.catalog.get(pkg.name) !== undefined) throw new Refusal(409, `${pkg.name} 已经登记过，请在它那一行“更新版本”`)
-    const plugin = this.catalog.save(pkg, url, { ...meta, status: input.publish === true ? 'published' : 'hidden' })
-    this.audit(actor, 'plugin-add', plugin.name, `${plugin.version} ${plugin.status}`)
+    if (await this.catalog.get(pkg.name) !== undefined) throw new Refusal(409, `${pkg.name} 已经登记过，请在它那一行“更新版本”`)
+    const plugin = await this.catalog.save(pkg, url, { ...meta, status: input.publish === true ? 'published' : 'hidden' })
+    await this.audit(actor, 'plugin-add', plugin.name, `${plugin.version} ${plugin.status}`)
     return plugin
   }
 
   /** A new version of a registered plugin, from a new package. */
   async updatePlugin(actor: Actor, name: string, url: unknown) {
-    const current = this.catalog.get(name)
+    const current = await this.catalog.get(name)
     if (current === undefined) throw new Refusal(404, `没有插件 ${name}`)
     const pkg = await fetchPackage(packageUrl(url), this.fetch)
-    const plugin = this.catalog.save(pkg, packageUrl(url), { displayName: current.displayName, permissions: current.permissions, preinstalled: current.preinstalled }, name)
-    this.audit(actor, 'plugin-update', name, `${current.version} → ${plugin.version}`)
+    const plugin = await this.catalog.save(pkg, packageUrl(url), { displayName: current.displayName, permissions: current.permissions, preinstalled: current.preinstalled }, name)
+    await this.audit(actor, 'plugin-update', name, `${current.version} → ${plugin.version}`)
     return plugin
   }
 
-  describePlugin(actor: Actor, name: string, input: Record<string, unknown>) {
-    const plugin = this.catalog.describe(name, pluginMeta(input))
-    this.audit(actor, 'plugin-describe', name)
+  async describePlugin(actor: Actor, name: string, input: Record<string, unknown>) {
+    const plugin = await this.catalog.describe(name, pluginMeta(input))
+    await this.audit(actor, 'plugin-describe', name)
     return plugin
   }
 
-  setPluginStatus(actor: Actor, name: string, status: unknown) {
-    const plugin = this.catalog.setStatus(name, status)
-    this.audit(actor, plugin.status === 'published' ? 'plugin-publish' : 'plugin-hide', name, plugin.version)
+  async setPluginStatus(actor: Actor, name: string, status: unknown) {
+    const plugin = await this.catalog.setStatus(name, status)
+    await this.audit(actor, plugin.status === 'published' ? 'plugin-publish' : 'plugin-hide', name, plugin.version)
     return plugin
   }
 
-  deletePlugin(actor: Actor, name: string): void {
-    const plugin = this.catalog.delete(name)
-    this.audit(actor, 'plugin-delete', name, plugin.version)
+  async deletePlugin(actor: Actor, name: string): Promise<void> {
+    const plugin = await this.catalog.delete(name)
+    await this.audit(actor, 'plugin-delete', name, plugin.version)
   }
 
   // Tunnels
@@ -490,69 +508,73 @@ export class AdminService {
   // 语音 (GL Work for iOS)
 
   /** The voice vendors with their keys and members, the settings, the voices, and the last day's token trades. */
-  voice() {
-    const keys = this.vendors.listKeys()
-    const assignments = this.vendors.assignments()
-    return {
-      settings: this.voiceStore.settings(),
-      vendors: this.voiceStore.voiceVendors().map(v => ({
+  async voice() {
+    const keys = await this.vendors.listKeys()
+    const assignments = await this.vendors.assignments()
+    const vendors = []
+    for (const v of await this.voiceStore.voiceVendors()) {
+      vendors.push({
         id: v.id, name: v.name, protocol: v.protocol,
         activeKeys: keys.filter(k => k.vendor === v.id && k.status === 'active').length,
         members: assignments.filter(a => a.vendor === v.id && a.apiKey !== null).map(a => a.member),
         waiting: assignments.filter(a => a.vendor === v.id && a.apiKey === null).map(a => a.member),
-        catalogAt: this.voiceStore.catalogAt(v.id),
-      })),
-      voices: this.voiceStore.catalog(),
-      tokens: this.voiceStore.tokensSince(this.now() - DAY_MS),
+        catalogAt: await this.voiceStore.catalogAt(v.id),
+      })
+    }
+    return {
+      settings: await this.voiceStore.settings(),
+      vendors,
+      voices: await this.voiceStore.catalog(),
+      tokens: await this.voiceStore.tokensSince(this.now() - DAY_MS),
     }
   }
 
-  setVoiceSettings(actor: Actor, input: Record<string, unknown>): VoiceSettings {
-    const before = JSON.stringify(this.voiceStore.settings())
-    const after = this.voiceStore.setSettings(input)
+  async setVoiceSettings(actor: Actor, input: Record<string, unknown>): Promise<VoiceSettings> {
+    const before = JSON.stringify(await this.voiceStore.settings())
+    const after = await this.voiceStore.setSettings(input)
     if (JSON.stringify(after) !== before) {
       const vendors = Object.entries(after.vendors).map(([id, v]) => `${id} 识别${v.asr ? '开' : '关'}(${v.asrModel}) 播报${v.tts ? '开' : '关'}(${v.ttsModel})`)
-      this.audit(actor, 'voice-settings', null, `${vendors.join('; ')}; 令牌 ${String(after.tokenTtlSeconds)} 秒, 每小时 ${String(after.tokensPerHour)} 次`)
+      await this.audit(actor, 'voice-settings', null, `${vendors.join('; ')}; 令牌 ${String(after.tokenTtlSeconds)} 秒, 每小时 ${String(after.tokensPerHour)} 次`)
     }
     return after
   }
 
   async refreshVoices(actor: Actor, vendor: string) {
     const result = await this.voiceStore.refreshCatalog(vendor, this.fetch)
-    this.audit(actor, 'voice-catalog', vendor, `${String(result.voices)} voices, ${String(result.added)} new`)
+    await this.audit(actor, 'voice-catalog', vendor, `${String(result.voices)} voices, ${String(result.added)} new`)
     return result
   }
 
-  setEnabledVoices(actor: Actor, vendor: string, ids: unknown): number {
-    const count = this.voiceStore.setEnabledVoices(vendor, ids)
-    this.audit(actor, 'voice-voices', vendor, `${String(count)} voices shown`)
+  async setEnabledVoices(actor: Actor, vendor: string, ids: unknown): Promise<number> {
+    const count = await this.voiceStore.setEnabledVoices(vendor, ids)
+    await this.audit(actor, 'voice-voices', vendor, `${String(count)} voices shown`)
     return count
   }
 
   /** Every tunnel with its owner's device, the domains, the settings, and who may open which kind. */
-  tunnels() {
-    const devices = new Map(this.store.listCredentials().filter(c => c.kind === 'device').map(c => [c.id, c]))
+  async tunnels() {
+    const devices = new Map((await this.store.listCredentials()).filter(c => c.kind === 'device').map(c => [c.id, c]))
     return {
       server: this.tunnelStore.server,
       publicIp: this.config.frps?.publicIp ?? null,
-      settings: this.tunnelStore.settings(),
-      domains: this.tunnelStore.domains(),
-      tunnels: this.tunnelStore.list().map(t => ({ ...t, deviceLabel: devices.get(t.device)?.label ?? null, deviceRevoked: devices.get(t.device)?.revokedAt != null })),
-      members: this.store.listMembers().map(m => ({ name: m.name, displayName: m.displayName, githubId: m.githubId, status: m.status, tunnels: m.tunnels, ssh: m.ssh })),
+      settings: await this.tunnelStore.settings(),
+      domains: await this.tunnelStore.domains(),
+      tunnels: (await this.tunnelStore.list()).map(t => ({ ...t, deviceLabel: devices.get(t.device)?.label ?? null, deviceRevoked: devices.get(t.device)?.revokedAt != null })),
+      members: (await this.store.listMembers()).map(m => ({ name: m.name, displayName: m.displayName, githubId: m.githubId, status: m.status, tunnels: m.tunnels, ssh: m.ssh })),
     }
   }
 
-  setTunnelSettings(actor: Actor, input: Record<string, unknown>) {
-    const before = this.tunnelStore.settings()
-    const after = this.tunnelStore.setSettings(input)
+  async setTunnelSettings(actor: Actor, input: Record<string, unknown>) {
+    const before = await this.tunnelStore.settings()
+    const after = await this.tunnelStore.setSettings(input)
     const changed = (Object.keys(after) as (keyof TunnelSettings)[]).filter(k => after[k] !== before[k]).map(k => `${String(k)} ${String(after[k])}`)
-    if (changed.length > 0) this.audit(actor, 'tunnel-settings', null, changed.join(', '))
+    if (changed.length > 0) await this.audit(actor, 'tunnel-settings', null, changed.join(', '))
     return after
   }
 
-  addTunnelDomain(actor: Actor, input: Record<string, unknown>) {
-    const domain = this.tunnelStore.addDomain(input)
-    this.audit(actor, 'tunnel-domain-add', domain.name)
+  async addTunnelDomain(actor: Actor, input: Record<string, unknown>) {
+    const domain = await this.tunnelStore.addDomain(input)
+    await this.audit(actor, 'tunnel-domain-add', domain.name)
     return domain
   }
 
@@ -560,44 +582,44 @@ export class AdminService {
     return this.tunnelStore.checkDomain(name)
   }
 
-  setDefaultTunnelDomain(actor: Actor, name: string): void {
-    this.tunnelStore.setDefaultDomain(name)
-    this.audit(actor, 'tunnel-domain-default', name)
+  async setDefaultTunnelDomain(actor: Actor, name: string): Promise<void> {
+    await this.tunnelStore.setDefaultDomain(name)
+    await this.audit(actor, 'tunnel-domain-default', name)
   }
 
-  deleteTunnelDomain(actor: Actor, name: string): void {
-    this.tunnelStore.deleteDomain(name)
-    this.audit(actor, 'tunnel-domain-delete', name)
+  async deleteTunnelDomain(actor: Actor, name: string): Promise<void> {
+    await this.tunnelStore.deleteDomain(name)
+    await this.audit(actor, 'tunnel-domain-delete', name)
   }
 
   /** Close a tunnel (frps refuses it until reopened) or reopen it. */
-  setTunnelClosed(actor: Actor, id: string, closed: boolean) {
-    const tunnel = this.tunnelStore.setClosed(id, closed ? actor.member.name : null)
-    this.audit(actor, closed ? 'tunnel-close' : 'tunnel-reopen', id, `${tunnel.member} ${tunnel.type} ${tunnel.name}`)
+  async setTunnelClosed(actor: Actor, id: string, closed: boolean) {
+    const tunnel = await this.tunnelStore.setClosed(id, closed ? actor.member.name : null)
+    await this.audit(actor, closed ? 'tunnel-close' : 'tunnel-reopen', id, `${tunnel.member} ${tunnel.type} ${tunnel.name}`)
     return tunnel
   }
 
-  deleteTunnel(actor: Actor, id: string): void {
-    const tunnel = this.tunnelStore.delete(id)
-    this.audit(actor, 'tunnel-delete', id, `${tunnel.member} ${tunnel.type} ${tunnel.name}`)
+  async deleteTunnel(actor: Actor, id: string): Promise<void> {
+    const tunnel = await this.tunnelStore.delete(id)
+    await this.audit(actor, 'tunnel-delete', id, `${tunnel.member} ${tunnel.type} ${tunnel.name}`)
   }
 
   // System config
 
-  systemConfig() {
-    return { canSeal: this.vendors.canSeal, entries: this.vendors.listPublic() }
+  async systemConfig() {
+    return { canSeal: this.vendors.canSeal, entries: await this.vendors.listPublic() }
   }
 
-  setConfig(actor: Actor, input: Record<string, unknown>) {
-    const entry = this.vendors.setPublic(input.key, input.value, input.secret, input.note, input.group)
+  async setConfig(actor: Actor, input: Record<string, unknown>) {
+    const entry = await this.vendors.setPublic(input.key, input.value, input.secret, input.note, input.group)
     // Never the value: secret or not, it is configuration other people read.
-    this.audit(actor, 'config-set', entry.key, entry.secret ? 'secret' : null)
+    await this.audit(actor, 'config-set', entry.key, entry.secret ? 'secret' : null)
     return entry
   }
 
-  deleteConfig(actor: Actor, key: string): void {
-    this.vendors.deletePublic(key)
-    this.audit(actor, 'config-delete', key)
+  async deleteConfig(actor: Actor, key: string): Promise<void> {
+    await this.vendors.deletePublic(key)
+    await this.audit(actor, 'config-delete', key)
   }
 }
 
@@ -614,24 +636,25 @@ export class SelfService {
   }
 
   /** The member whose view is read: the viewer, or for administrators a previewed member. */
-  subject(viewer: Member, as: string | null | undefined): Member {
+  async subject(viewer: Member, as: string | null | undefined): Promise<Member> {
     if (as === null || as === undefined || as === '' || as === viewer.name) return viewer
     if (viewer.role !== 'admin') throw new Refusal(403, '只有管理员能预览其他成员')
-    const member = this.store.member(as)
+    const member = await this.store.member(as)
     if (member === undefined) throw new Refusal(404, `没有成员 ${as}`)
     return member
   }
 
-  profile(member: Member) {
-    const keys = new Map(this.vendors.listKeys().map(k => [k.id, k]))
-    const accounts = new Map(this.vendors.listAccounts().map(a => [a.id, a]))
-    const subscriptions = new Map(this.vendors.listSubscriptions().map(s => [s.id, s]))
+  async profile(member: Member) {
+    const keys = new Map((await this.vendors.listKeys()).map(k => [k.id, k]))
+    const accounts = new Map((await this.vendors.listAccounts()).map(a => [a.id, a]))
+    const subscriptions = new Map((await this.vendors.listSubscriptions()).map(s => [s.id, s]))
+    const vendors = new Map((await this.vendors.listVendors()).map(v => [v.id, v]))
     return {
       member,
       gateway: `${this.config.publicOrigin}/agent-work/llm`,
       configUrl: `${this.config.publicOrigin}/agent-work/config/system`,
-      vendors: this.vendors.assignments(member.name).flatMap((a) => {
-        const vendor = this.vendors.vendor(a.vendor)
+      vendors: (await this.vendors.assignments(member.name)).flatMap((a) => {
+        const vendor = vendors.get(a.vendor)
         if (vendor === undefined) return []
         const key = a.apiKey === null ? undefined : keys.get(a.apiKey)
         const account = a.cliAccount === null ? undefined : accounts.get(a.cliAccount)
@@ -646,26 +669,26 @@ export class SelfService {
     }
   }
 
-  devices(member: Member): DeviceView[] {
-    return this.store.listCredentials(member.name).map(deviceView)
+  async devices(member: Member): Promise<DeviceView[]> {
+    return (await this.store.listCredentials(member.name)).map(deviceView)
   }
 
   /** System config as members see it in the console: secret values masked (tools read them with a key). */
-  systemConfig() {
-    return this.vendors.listPublic().map(({ key, value, secret, note, group }) => ({ key, value, secret, note, group }))
+  async systemConfig() {
+    return (await this.vendors.listPublic()).map(({ key, value, secret, note, group }) => ({ key, value, secret, note, group }))
   }
 
-  issueKey(actor: Actor, label: unknown): IssuedKey {
-    const issued = issueInternalKey(this.store, actor.member.name, label)
-    this.store.audit({ actor: actor.member.name, action: 'key-issue', target: issued.id, detail: `${actor.member.name} ${issued.label}`, ip: actor.ip })
+  async issueKey(actor: Actor, label: unknown): Promise<IssuedKey> {
+    const issued = await issueInternalKey(this.store, actor.member.name, label)
+    await this.store.audit({ actor: actor.member.name, action: 'key-issue', target: issued.id, detail: `${actor.member.name} ${issued.label}`, ip: actor.ip })
     return issued
   }
 
   /** Revoke one of the member's own credentials; anyone else's answers as missing. */
-  revoke(actor: Actor, id: string): void {
-    const credential = this.store.credential(id)
+  async revoke(actor: Actor, id: string): Promise<void> {
+    const credential = await this.store.credential(id)
     if (credential === undefined || credential.member !== actor.member.name || credential.revokedAt !== null) throw new Refusal(404, '没有这个设备或 Key')
-    this.store.revokeCredential(id)
-    this.store.audit({ actor: actor.member.name, action: 'credential-revoke', target: id, detail: `${actor.member.name} ${credential.kind} ${credential.label}`, ip: actor.ip })
+    await this.store.revokeCredential(id)
+    await this.store.audit({ actor: actor.member.name, action: 'credential-revoke', target: id, detail: `${actor.member.name} ${credential.kind} ${credential.label}`, ip: actor.ip })
   }
 }

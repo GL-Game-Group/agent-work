@@ -35,9 +35,9 @@ export async function act<T>(operation: () => T | Promise<T>): Promise<T | Retur
 }
 
 /** For loads: a refusal becomes the error page. */
-export function orError<T>(operation: () => T): T {
+export async function orError<T>(operation: () => T | Promise<T>): Promise<T> {
 	try {
-		return operation();
+		return await operation();
 	} catch (cause) {
 		if (Refusal.is(cause)) error(cause.status, cause.message);
 		throw cause;

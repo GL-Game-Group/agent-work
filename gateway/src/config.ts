@@ -27,7 +27,13 @@ export interface GatewayConfig {
    * X-Forwarded-For; used for audit and rate limits only, never to authorize.
    */
   clientIpHeader?: string
-  databasePath: string
+  /**
+   * PostgreSQL (DATABASE_URL or AGENT_WORK_DATABASE_URL), e.g. postgres://user:pass@host:5432/agent_work.
+   * Absent, the service keeps its data in PGlite (PostgreSQL in this process) under {@link dataDir}.
+   */
+  databaseUrl?: string
+  /** PGlite's data directory when there is no databaseUrl (AGENT_WORK_DATA_DIR); null keeps the data in memory (tests, demos). */
+  dataDir?: string | null
   github: GitHubConfig
   /** Master key sealing vendor API keys and secret public config (AGENT_WORK_SECRET_KEY, 32 bytes base64 or hex). */
   secretKey?: string
@@ -78,6 +84,19 @@ function frpsConfig(env: NodeJS.ProcessEnv): { frps?: NonNullable<GatewayConfig[
   return { frps: { addr: env.AGENT_WORK_FRPS_ADDR, port, protocol, pluginSecret, publicIp: env.AGENT_WORK_TUNNEL_IP || null, vhost } }
 }
 
+function databaseConfig(env: NodeJS.ProcessEnv): Pick<GatewayConfig, 'databaseUrl' | 'dataDir'> {
+  const url = env.DATABASE_URL || env.AGENT_WORK_DATABASE_URL
+  if (url) {
+    if (!/^postgres(?:ql)?:\/\//u.test(url)) throw new Error('gateway: DATABASE_URL must be a postgres:// connection string')
+    return { databaseUrl: url }
+  }
+  // The SQLite file is no longer read: starting on an empty database instead would look like everyone was removed.
+  if (env.AGENT_WORK_DB && !env.AGENT_WORK_DATA_DIR) {
+    throw new Error('gateway: AGENT_WORK_DB (SQLite) is no longer used; copy it into PostgreSQL with gateway/src/migrate-sqlite.ts, then set DATABASE_URL (or AGENT_WORK_DATA_DIR for PGlite) and remove AGENT_WORK_DB')
+  }
+  return { dataDir: env.AGENT_WORK_DATA_DIR || '/data/pglite' }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
   const port = Number(env.AGENT_WORK_GATEWAY_PORT ?? '8787')
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('gateway: AGENT_WORK_GATEWAY_PORT must be a port number')
@@ -88,7 +107,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     listenPort: port,
     trustProxy: env.AGENT_WORK_TRUST_PROXY === '1',
     ...env.AGENT_WORK_CLIENT_IP_HEADER ? { clientIpHeader: env.AGENT_WORK_CLIENT_IP_HEADER.trim().toLowerCase() } : {},
-    databasePath: env.AGENT_WORK_DB ?? '/data/gateway.db',
+    ...databaseConfig(env),
     ...frpsConfig(env),
     ...env.AGENT_WORK_SECRET_KEY === undefined || env.AGENT_WORK_SECRET_KEY === '' ? {} : { secretKey: secretKey(env.AGENT_WORK_SECRET_KEY) },
     ...env.DEEPSEEK_API_KEY === undefined || env.DEEPSEEK_API_KEY === '' ? {} : {

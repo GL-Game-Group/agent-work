@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import WebSocket from 'ws'
 import { Store } from '../../../gateway/src/db.ts'
+import { openPglite } from '../../../gateway/src/sql.ts'
 import { GitHub } from '../../../gateway/src/github.ts'
 import { createGateway } from '../../../gateway/src/server.ts'
 import { Tunnels } from '../../../gateway/src/tunnels.ts'
@@ -84,7 +85,8 @@ function started(command, args, env, ready, label) {
 
 describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR === undefined ? 'set AGENT_WORK_DSH and AGENT_WORK_FRP_DIR' : false }, () => {
   const home = mkdtempSync(join(tmpdir(), 'aw-tunnel-'))
-  const store = new Store(':memory:')
+  /** @type {Store} */
+  let store
   const children = []
   let gateway, github, gatewayOrigin, hostOrigin, cookie, tunnels, vhostPort, webPort, sshPort, host
 
@@ -140,15 +142,16 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     vhostPort = await freePort()
     gatewayOrigin = `http://127.0.0.1:${gatewayPort}`
     const config = {
-      publicOrigin: gatewayOrigin, listenHost: '127.0.0.1', listenPort: gatewayPort, trustProxy: false, databasePath: ':memory:',
+      publicOrigin: gatewayOrigin, listenHost: '127.0.0.1', listenPort: gatewayPort, trustProxy: false, dataDir: null,
       github: { clientId: 'id', clientSecret: 'secret', org: '', webUrl: githubOrigin, apiUrl: githubOrigin },
       frps: { addr: '127.0.0.1', port: bindPort, protocol: 'tcp', pluginSecret: SECRET, publicIp: null, vhost: { host: '127.0.0.1', port: vhostPort } },
     }
-    store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice-gh', role: 'member', tunnels: true, ssh: true })
-    store.addMember({ name: 'bob', githubId: 102, githubLogin: 'bob-gh', role: 'member', tunnels: true, ssh: true })
+    store = await Store.open(await openPglite())
+    await store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice-gh', role: 'member', tunnels: true, ssh: true })
+    await store.addMember({ name: 'bob', githubId: 102, githubLogin: 'bob-gh', role: 'member', tunnels: true, ssh: true })
     tunnels = new Tunnels(store, config)
-    tunnels.addDomain({ name: 't.test' })
-    tunnels.markDomain('t.test', 'ok', 'ok')
+    await tunnels.addDomain({ name: 't.test' })
+    await tunnels.markDomain('t.test', 'ok', 'ok')
     gateway = createGateway({ config, store, github: new GitHub(config.github), authRateLimit: { requests: 1000, windowMs: 60_000 } })
     await listen(gateway, gatewayPort)
 
@@ -199,11 +202,11 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     }
   })
 
-  after(() => {
+  after(async () => {
     for (const child of children) child.kill()
     gateway?.close()
     github?.close()
-    store.close()
+    await store?.close()
     rmSync(home, { recursive: true, force: true })
   })
 
@@ -271,13 +274,13 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     const created = await action({ op: 'create', type: 'ssh', name: 'box', localPort: sshPort, sshAccess: ['bob'] })
     await until(v => v.tunnels.find(t => t.id === created.created)?.state === 'on', 'ssh tunnel on')
     // Bob's GL Work: a visitor to alice's box, and his own box shared with alice.
-    const bob = store.member('bob')
-    const bobDevice = store.issueCredential('bob', 'device', 'bob-mac', 86_400_000)
+    const bob = await store.member('bob')
+    const bobDevice = await store.issueCredential('bob', 'device', 'bob-mac', 86_400_000)
     const bobSshd = createTcpServer((socket) => { socket.on('data', (c) => { socket.end(`bob ${c}`) }) })
     const bobSshPort = await listen(bobSshd)
     children.push({ kill: () => { bobSshd.close() } })
-    const bobBox = tunnels.create(bob, bobDevice.credential, { type: 'ssh', name: 'bobbox', localPort: bobSshPort, sshAccess: ['alice'] })
-    const view = tunnels.forMember(bob, bobDevice.credential.id)
+    const bobBox = await tunnels.create(bob, bobDevice.credential, { type: 'ssh', name: 'bobbox', localPort: bobSshPort, sshAccess: ['alice'] })
+    const view = await tunnels.forMember(bob, bobDevice.credential.id)
     const own = view.tunnels.find(t => t.id === bobBox.id)
     const shared = view.shared.find(s => s.owner === 'alice')
     const visitPort = await freePort()
@@ -304,7 +307,7 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
 
   it('stops what an administrator closes, and shows why', async () => {
     const t = (await page()).tunnels.find(x => x.name === 'web')
-    tunnels.setClosed(t.id, 'admin')
+    await tunnels.setClosed(t.id, 'admin')
     // frps drops alice's frpc at its next heartbeat (30 s); the page knows at once from the company service.
     const view = await until(v => v.tunnels.find(x => x.id === t.id)?.state === 'closed', 'closed', true)
     assert.equal(view.tunnels.find(x => x.id === t.id).message, '管理员已关闭这条隧道')
@@ -313,11 +316,11 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
   })
 
   it('refuses tunnels the member may not open', async () => {
-    store.setTunnelGrants('alice', { ssh: false })
+    await store.setTunnelGrants('alice', { ssh: false })
     await page(true)
     const refused = await action({ op: 'create', type: 'ssh', name: 'nope', localPort: 22, sshAccess: 'all' }, 403)
     assert.match(refused.error, /还没有开通 SSH/u)
-    store.setTunnelGrants('alice', { ssh: true })
+    await store.setTunnelGrants('alice', { ssh: true })
   })
 
   it('stops frpc when the last tunnel is turned off', async () => {
@@ -326,14 +329,14 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     await until(v => v.frpc.running === false, 'frpc stopped')
     const box = view.tunnels.find(x => x.name === 'box')
     await action({ op: 'delete', id: box.id })
-    assert.equal(tunnels.get(box.id), undefined)
+    assert.equal(await tunnels.get(box.id), undefined)
   })
 
   it('lets alice\'s phone use this Host through the company relay (手机远程)', async () => {
     await action({ op: 'remote-on' })
     const view = await until(v => v.phone?.state === 'on', '手机远程 on')
     assert.equal(view.tunnels.some(t => t.type === 'remote'), false, 'not listed among tunnels')
-    const phone = store.issueCredential('alice', 'phone', 'iPhone', 86_400_000).token
+    const phone = (await store.issueCredential('alice', 'phone', 'iPhone', 86_400_000)).token
     const asPhone = { authorization: `Bearer ${phone}` }
     const { hosts } = await (await fetch(`${gatewayOrigin}/agent-work/remote/hosts`, { headers: asPhone })).json()
     assert.equal(hosts.length, 1)
@@ -386,7 +389,7 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
     socket.close()
     // The company loses this device's remote tunnel (as after signing in again, a new device):
     // GL Work, still set to 手机远程 here, registers it again by itself.
-    store.db.prepare("delete from tunnels where id = ?").run(hosts[0].id)
+    await store.sql.run("delete from tunnels where id = ?", [hosts[0].id])
     const back = await until(v => v.phone?.state === 'on', '手机远程 back', true)
     assert.equal(back.phone.enabled, true)
     const again = (await (await fetch(`${gatewayOrigin}/agent-work/remote/hosts`, { headers: asPhone })).json()).hosts
@@ -406,7 +409,7 @@ describe('内网穿透 in a real Host', { skip: DSH_DIR === undefined || FRP_DIR
 
   it('takes frpc down with GL Work', async () => {
     const web = (await page()).tunnels.find(x => x.name === 'web')
-    tunnels.setClosed(web.id, null)
+    await tunnels.setClosed(web.id, null)
     await page(true)
     await action({ op: 'start', id: web.id })
     await until(v => v.tunnels.find(x => x.id === web.id)?.state === 'on', 'on again')

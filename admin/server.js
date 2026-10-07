@@ -12,7 +12,7 @@ import { createRuntime, setRuntime } from '@agent-work/gateway/runtime';
 if (process.env.AGENT_WORK_ENV_FILE) process.loadEnvFile(process.env.AGENT_WORK_ENV_FILE);
 const config = loadConfig();
 if (config.secretKey === undefined) console.warn('agent-work: AGENT_WORK_SECRET_KEY is not set; API keys and secret config cannot be stored (openssl rand -base64 32)');
-const runtime = createRuntime(config);
+const runtime = await createRuntime(config);
 setRuntime(runtime);
 // SvelteKit's origin checks and URLs follow the public address, not the listening one.
 process.env.ORIGIN = config.publicOrigin;
@@ -35,14 +35,14 @@ server.on('upgrade', (req, socket, head) => {
 	if (!runtime.upgrade(req, socket, head)) socket.destroy();
 });
 
-const purge = setInterval(() => { runtime.store.purge(); }, 60 * 60 * 1000);
+const purge = setInterval(() => { runtime.store.purge().catch((error) => { console.error('agent-work: purge failed', error); }); }, 60 * 60 * 1000);
 purge.unref();
 server.listen(config.listenPort, config.listenHost, () => {
 	console.log(`agent-work: ${config.publicOrigin} served on ${config.listenHost}:${String(config.listenPort)}`);
 });
 for (const signal of ['SIGTERM', 'SIGINT']) {
 	process.once(signal, () => {
-		server.close(() => { runtime.store.close(); process.exit(0); });
+		server.close(() => { runtime.store.close().finally(() => process.exit(0)); });
 		server.closeAllConnections();
 	});
 }

@@ -10,11 +10,16 @@
  *   revoke <credential-id>
  *   audit [<count>]
  *   usage [<days>]
+ *
+ * With PostgreSQL (DATABASE_URL) it runs beside the service. PGlite's data
+ * directory belongs to one process at a time, so there the service must be
+ * stopped first, and the command says so with --service-stopped.
  */
 import { parseArgs } from 'node:util'
 import { loadConfig } from './config.ts'
 import { Store, type Role } from './db.ts'
 import { GitHub } from './github.ts'
+import { openDatabase } from './sql.ts'
 
 function fail(message: string): never {
   console.error(`agent-work-admin: ${message}`)
@@ -34,14 +39,17 @@ function table(rows: string[][]): void {
 async function main(): Promise<void> {
   if (process.env.AGENT_WORK_ENV_FILE !== undefined) process.loadEnvFile(process.env.AGENT_WORK_ENV_FILE)
   const config = loadConfig()
-  const store = new Store(config.databasePath)
-  const audit = (action: string, target: string, detail: string | null = null): void => {
-    store.audit({ actor: `cli:${process.env.SUDO_USER ?? 'root'}`, action, target, detail, ip: null })
-  }
   const { positionals, values } = parseArgs({
     allowPositionals: true,
-    options: { github: { type: 'string' }, admin: { type: 'boolean' } },
+    options: { 'github': { type: 'string' }, 'admin': { type: 'boolean' }, 'service-stopped': { type: 'boolean' } },
   })
+  if (config.databaseUrl === undefined && values['service-stopped'] !== true) {
+    fail(`the data is in PGlite (${config.dataDir ?? 'memory'}), which only one process may open: stop the service, then add --service-stopped`)
+  }
+  const store = await Store.open(await openDatabase(config))
+  const audit = async (action: string, target: string, detail: string | null = null): Promise<void> => {
+    await store.audit({ actor: `cli:${process.env.SUDO_USER ?? 'root'}`, action, target, detail, ip: null })
+  }
   const [group, command, ...rest] = positionals
 
   try {
@@ -53,18 +61,18 @@ async function main(): Promise<void> {
         const login = values.github ?? fail('--github <login> is required')
         if (login.includes('@')) fail('--github takes the GitHub username (github.com/<username>), not an email address')
         const user = await new GitHub(config.github).lookup(login)
-        const holder = store.memberByGithubId(user.id)
+        const holder = await store.memberByGithubId(user.id)
         if (holder !== undefined) fail(`GitHub account ${user.login} already belongs to member ${holder.name}`)
-        if (store.member(name) !== undefined) fail(`member ${name} already exists`)
+        if (await store.member(name) !== undefined) fail(`member ${name} already exists`)
         const role: Role = values.admin === true ? 'admin' : 'member'
-        store.addMember({ name, githubId: user.id, githubLogin: user.login, role })
-        audit('member-add', name, `github ${user.login} (${String(user.id)}), ${role}`)
+        await store.addMember({ name, githubId: user.id, githubLogin: user.login, role })
+        await audit('member-add', name, `github ${user.login} (${String(user.id)}), ${role}`)
         console.log(`${name}: GitHub ${user.login} (${String(user.id)}), ${role}. Sign in from the desktop app with that GitHub account.`)
         return
       }
       case 'member list': {
         const rows = [['NAME', 'GITHUB', 'ROLE', 'STATUS', 'CREATED']]
-        for (const member of store.listMembers()) rows.push([member.name, member.githubLogin, member.role, member.status, date(member.createdAt)])
+        for (const member of await store.listMembers()) rows.push([member.name, member.githubLogin, member.role, member.status, date(member.createdAt)])
         table(rows)
         return
       }
@@ -72,22 +80,22 @@ async function main(): Promise<void> {
       case 'member enable': {
         const name = rest[0] ?? fail(`usage: member ${command ?? ''} <name>`)
         const disable = command === 'disable'
-        store.setStatus(name, disable ? 'disabled' : 'active')
-        audit(`member-${command ?? ''}`, name)
+        await store.setStatus(name, disable ? 'disabled' : 'active')
+        await audit(`member-${command ?? ''}`, name)
         console.log(disable ? `${name} disabled and signed out everywhere` : `${name} enabled`)
         return
       }
       case 'member role': {
         const [name, role] = rest
         if (name === undefined || (role !== 'admin' && role !== 'member')) fail('usage: member role <name> admin|member')
-        store.setRole(name, role)
-        audit('member-role', name, role)
+        await store.setRole(name, role)
+        await audit('member-role', name, role)
         console.log(`${name} is now ${role}`)
         return
       }
       case 'devices': {
         const rows = [['ID', 'MEMBER', 'KIND', 'LABEL', 'CREATED', 'LAST USED', 'EXPIRES']]
-        for (const c of store.listCredentials(rest[0] ?? command)) {
+        for (const c of await store.listCredentials(rest[0] ?? command)) {
           rows.push([c.id, c.member, c.kind, c.label.slice(0, 40), date(c.createdAt), date(c.lastUsedAt), date(c.expiresAt)])
         }
         table(rows)
@@ -95,15 +103,15 @@ async function main(): Promise<void> {
       }
       case 'revoke': {
         const id = command ?? fail('usage: revoke <credential-id>')
-        if (!store.revokeCredential(id)) fail(`no active credential ${id}`)
-        audit('credential-revoke', id)
+        if (!await store.revokeCredential(id)) fail(`no active credential ${id}`)
+        await audit('credential-revoke', id)
         console.log(`${id} revoked`)
         return
       }
       case 'usage': {
         const days = Number(command ?? '30')
         const rows = [['MEMBER', 'REQUESTS', 'INPUT', 'OUTPUT', 'CACHE READ', 'CACHE WRITE']]
-        for (const u of store.usageSince(Date.now() - days * 24 * 60 * 60 * 1000)) {
+        for (const u of await store.usageSince(Date.now() - days * 24 * 60 * 60 * 1000)) {
           rows.push([u.member, String(u.requests), String(u.inputTokens), String(u.outputTokens), String(u.cacheReadTokens), String(u.cacheWriteTokens)])
         }
         console.log(`model usage, last ${String(days)} days`)
@@ -112,7 +120,7 @@ async function main(): Promise<void> {
       }
       case 'audit': {
         const rows = [['AT', 'ACTOR', 'ACTION', 'TARGET', 'DETAIL', 'IP']]
-        for (const e of store.recentAudit(Number(command ?? '50')).reverse()) {
+        for (const e of (await store.recentAudit(Number(command ?? '50'))).reverse()) {
           rows.push([date(e.at), e.actor ?? '-', e.action, e.target ?? '-', (e.detail ?? '-').slice(0, 60), e.ip ?? '-'])
         }
         table(rows)
@@ -122,7 +130,7 @@ async function main(): Promise<void> {
         fail('unknown command; see the header of gateway/src/cli.ts')
     }
   } finally {
-    store.close()
+    await store.close()
   }
 }
 

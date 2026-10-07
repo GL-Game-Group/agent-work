@@ -1,7 +1,7 @@
 import { act, actor, getRuntime, requireAdmin, text } from '#lib/server/context.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = (event) => {
+export const load: PageServerLoad = async (event) => {
 	requireAdmin(event);
 	return getRuntime().admin.tunnels();
 };
@@ -9,8 +9,8 @@ export const load: PageServerLoad = (event) => {
 export const actions: Actions = {
 	settings: async (event) => {
 		const form = await event.request.formData();
-		return act(() => {
-			getRuntime().admin.setTunnelSettings(actor(event), {
+		return act(async () => {
+			await getRuntime().admin.setTunnelSettings(actor(event), {
 				enabled: form.get('enabled') === 'on',
 				allowPublic: form.get('allowPublic') === 'on',
 				ssh: form.get('ssh') === 'on',
@@ -24,7 +24,7 @@ export const actions: Actions = {
 	},
 	addDomain: async (event) => {
 		const form = await event.request.formData();
-		return act(() => ({ domain: getRuntime().admin.addTunnelDomain(actor(event), { name: text(form, 'name'), note: text(form, 'note') }).name }));
+		return act(async () => ({ domain: (await getRuntime().admin.addTunnelDomain(actor(event), { name: text(form, 'name'), note: text(form, 'note') })).name }));
 	},
 	checkDomain: async (event) => {
 		const form = await event.request.formData();
@@ -36,18 +36,18 @@ export const actions: Actions = {
 	},
 	defaultDomain: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.setDefaultTunnelDomain(actor(event), text(form, 'name')); return {}; });
+		return act(async () => { await getRuntime().admin.setDefaultTunnelDomain(actor(event), text(form, 'name')); return {}; });
 	},
 	deleteDomain: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.deleteTunnelDomain(actor(event), text(form, 'name')); return {}; });
+		return act(async () => { await getRuntime().admin.deleteTunnelDomain(actor(event), text(form, 'name')); return {}; });
 	},
 	close: async (event) => {
 		const form = await event.request.formData();
-		return act(() => ({ closed: getRuntime().admin.setTunnelClosed(actor(event), text(form, 'id'), form.get('closed') === 'true').closedBy !== null }));
+		return act(async () => ({ closed: (await getRuntime().admin.setTunnelClosed(actor(event), text(form, 'id'), form.get('closed') === 'true')).closedBy !== null }));
 	},
 	delete: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.deleteTunnel(actor(event), text(form, 'id')); return {}; });
+		return act(async () => { await getRuntime().admin.deleteTunnel(actor(event), text(form, 'id')); return {}; });
 	}
 };

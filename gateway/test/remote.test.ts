@@ -9,7 +9,8 @@ import { request as httpRequest, createServer, type IncomingHttpHeaders, type Se
 import { connect, type AddressInfo } from 'node:net'
 import { after, before, describe, it } from 'node:test'
 import type { GatewayConfig } from '../src/config.ts'
-import { Store } from '../src/db.ts'
+import type { Store } from '../src/db.ts'
+import { memoryStore } from './memory.ts'
 import { GitHub } from '../src/github.ts'
 import { createRuntime, type Runtime } from '../src/runtime.ts'
 import { REMOTE_DOMAIN } from '../src/tunnels.ts'
@@ -57,7 +58,7 @@ function upgrade(port: number, path: string, headers: Record<string, string>): P
 }
 
 describe('手机远程', () => {
-  const store = new Store(':memory:')
+  const store = memoryStore()
   const github = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://github.invalid')
     const login = req.headers.authorization?.replace('Bearer tok-', '')
@@ -96,9 +97,9 @@ describe('手机远程', () => {
   const phone: Record<string, string> = {}
 
   /** frps opening a Mac's remote proxy, as its plugin call. */
-  const openProxy = (member: string, tunnel: string, extra: Record<string, unknown> = {}) => rt.tunnels.frp('NewProxy', {
+  const openProxy = async (member: string, tunnel: string, extra: Record<string, unknown> = {}) => await rt.tunnels.frp('NewProxy', {
     user: { user: member, metas: { token: device[member]?.token } }, proxy_name: `${member}.${tunnel}`, proxy_type: 'http',
-    custom_domains: [rt.tunnels.get(tunnel)?.host], ...extra,
+    custom_domains: [(await rt.tunnels.get(tunnel))?.host], ...extra,
   })
 
   async function phoneLogin(login: string, verifier = randomSecret()): Promise<Reply> {
@@ -116,32 +117,32 @@ describe('手机远程', () => {
   }
 
   before(async () => {
-    store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice', role: 'member' })
-    store.addMember({ name: 'bob', githubId: 102, githubLogin: 'bob', role: 'member' })
+    await store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice', role: 'member' })
+    await store.addMember({ name: 'bob', githubId: 102, githubLogin: 'bob', role: 'member' })
     for (const name of ['alice', 'bob']) {
-      const issued = store.issueCredential(name, 'device', `${name} 的 MacBook`, 86_400_000)
+      const issued = await store.issueCredential(name, 'device', `${name} 的 MacBook`, 86_400_000)
       device[name] = { id: issued.credential.id, token: issued.token }
     }
     const githubOrigin = `http://127.0.0.1:${String(await listen(github))}`
     const vhostPort = await listen(vhost)
     const config: GatewayConfig = {
-      publicOrigin: 'https://agent.example.com', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false, databasePath: ':memory:',
+      publicOrigin: 'https://agent.example.com', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false,
       github: { clientId: 'x', clientSecret: 'x', org: '', webUrl: githubOrigin, apiUrl: githubOrigin },
       frps: { addr: 'frp.example.com', port: 443, protocol: 'wss', pluginSecret: SECRET, publicIp: null, vhost: { host: '127.0.0.1', port: vhostPort } },
     }
-    rt = createRuntime(config, { store, authRateLimit: { requests: 1000, windowMs: 60_000 } })
+    rt = await createRuntime(config, { store, authRateLimit: { requests: 1000, windowMs: 60_000 } })
     service = createServer((req, res) => { void rt.gateway(req, res) })
     service.on('upgrade', (req, socket, head) => { if (!rt.upgrade(req, socket, head)) socket.destroy() })
     port = await listen(service)
   })
 
-  after(() => {
+  after(async () => {
     service.closeAllConnections()
     service.close()
     vhost.closeAllConnections()
     vhost.close()
     github.close()
-    store.close()
+    await store.close()
   })
 
   it('signs the phone in through GitHub with PKCE, as a phone and nothing more', async () => {
@@ -153,7 +154,7 @@ describe('手机远程', () => {
     phone.alice = body.token
     const bob = JSON.parse((await phoneLogin('bob')).body) as { token: string }
     phone.bob = bob.token
-    assert.equal(store.listCredentials('alice').find(c => c.kind === 'phone')?.label, 'alice 的 iPhone')
+    assert.equal((await store.listCredentials('alice')).find(c => c.kind === 'phone')?.label, 'alice 的 iPhone')
   })
 
   it('keeps phone and desktop sign-in codes apart', async () => {
@@ -180,30 +181,30 @@ describe('手机远程', () => {
     assert.equal((await send(port, 'GET', '/agent-work/whoami', asPhone)).status, 200)
   })
 
-  it('turns 手机远程 on once per Mac, outside the member\'s tunnel count', () => {
-    const alice = store.member('alice')
-    const mac = store.credential(device.alice?.id as string)
+  it('turns 手机远程 on once per Mac, outside the member\'s tunnel count', async () => {
+    const alice = await store.member('alice')
+    const mac = await store.credential(device.alice?.id as string)
     assert.ok(alice !== undefined && mac !== undefined)
-    const first = rt.tunnels.create(alice, mac, { type: 'remote' })
-    assert.equal(rt.tunnels.create(alice, mac, { type: 'remote' }).id, first.id)
+    const first = await rt.tunnels.create(alice, mac, { type: 'remote' })
+    assert.equal((await rt.tunnels.create(alice, mac, { type: 'remote' })).id, first.id)
     assert.match(first.host ?? '', new RegExp(`^r[0-9a-f]{24}\\.${REMOTE_DOMAIN.replace('.', '\\.')}$`, 'u'))
-    assert.throws(() => rt.tunnels.update(alice, first.id, { localPort: 22 }), /没有可以修改/u)
-    assert.throws(() => rt.tunnels.addDomain({ name: REMOTE_DOMAIN }), /手机远程/u)
-    const bob = store.member('bob')
-    const bobMac = store.credential(device.bob?.id as string)
+    await assert.rejects(async () => await rt.tunnels.update(alice, first.id, { localPort: 22 }), /没有可以修改/u)
+    await assert.rejects(async () => await rt.tunnels.addDomain({ name: REMOTE_DOMAIN }), /手机远程/u)
+    const bob = await store.member('bob')
+    const bobMac = await store.credential(device.bob?.id as string)
     assert.ok(bob !== undefined && bobMac !== undefined)
-    rt.tunnels.create(bob, bobMac, { type: 'remote' })
+    await rt.tunnels.create(bob, bobMac, { type: 'remote' })
   })
 
-  it('lets frps open a Mac\'s remote proxy only as registered, from that Mac', () => {
-    const alice = rt.tunnels.list('alice').find(t => t.type === 'remote')
+  it('lets frps open a Mac\'s remote proxy only as registered, from that Mac', async () => {
+    const alice = (await rt.tunnels.list('alice')).find(t => t.type === 'remote')
     assert.ok(alice !== undefined)
-    assert.equal(openProxy('alice', alice.id, { custom_domains: ['evil.glwork.dev'] }).reject, true)
-    assert.equal(openProxy('alice', alice.id, { http_user: 'u', http_pwd: 'p' }).reject, true)
-    assert.equal(openProxy('alice', alice.id, { proxy_type: 'tcp' }).reject, true)
+    assert.equal((await openProxy('alice', alice.id, { custom_domains: ['evil.glwork.dev'] })).reject, true)
+    assert.equal((await openProxy('alice', alice.id, { http_user: 'u', http_pwd: 'p' })).reject, true)
+    assert.equal((await openProxy('alice', alice.id, { proxy_type: 'tcp' })).reject, true)
     // Bob's Mac claiming Alice's remote tunnel.
-    assert.equal(rt.tunnels.frp('NewProxy', { user: { user: 'bob', metas: { token: device.bob?.token } }, proxy_name: `bob.${alice.id}`, proxy_type: 'http', custom_domains: [alice.host] }).reject, true)
-    assert.equal(openProxy('alice', alice.id).reject, false)
+    assert.equal((await rt.tunnels.frp('NewProxy', { user: { user: 'bob', metas: { token: device.bob?.token } }, proxy_name: `bob.${alice.id}`, proxy_type: 'http', custom_domains: [alice.host] })).reject, true)
+    assert.equal((await openProxy('alice', alice.id)).reject, false)
   })
 
   it('lists the member\'s own Macs to their phone', async () => {
@@ -213,8 +214,8 @@ describe('手机远程', () => {
   })
 
   it('relays a phone\'s request to its own Mac only, without its credential', async () => {
-    const alice = rt.tunnels.list('alice').find(t => t.type === 'remote')
-    const bob = rt.tunnels.list('bob').find(t => t.type === 'remote')
+    const alice = (await rt.tunnels.list('alice')).find(t => t.type === 'remote')
+    const bob = (await rt.tunnels.list('bob')).find(t => t.type === 'remote')
     assert.ok(alice !== undefined && bob !== undefined)
     const headers = { 'authorization': `Bearer ${phone.alice as string}`, 'content-type': 'application/json', 'cookie': 'x=1' }
     const ok = await send(port, 'POST', `/agent-work/remote/${alice.id}/api/session.list`, headers, '{"type":"client-request"}')
@@ -233,8 +234,8 @@ describe('手机远程', () => {
   })
 
   it('relays the live events WebSocket to the phone\'s own Mac only', async () => {
-    const alice = rt.tunnels.list('alice').find(t => t.type === 'remote')
-    const bob = rt.tunnels.list('bob').find(t => t.type === 'remote')
+    const alice = (await rt.tunnels.list('alice')).find(t => t.type === 'remote')
+    const bob = (await rt.tunnels.list('bob')).find(t => t.type === 'remote')
     assert.ok(alice !== undefined && bob !== undefined)
     const ok = await upgrade(port, `/agent-work/remote/${alice.id}/api/events.mux`, { Authorization: `Bearer ${phone.alice as string}` })
     assert.match(ok.head, /^HTTP\/1\.1 101/u)
@@ -254,30 +255,30 @@ describe('手机远程', () => {
       assert.match(refused.head, new RegExp(`^HTTP/1\\.1 ${String(status)}`, 'u'), path)
       refused.socket.destroy()
     }
-    assert.equal(store.recentAudit().filter(e => e.action === 'remote-connect').length, 1)
+    assert.equal((await store.recentAudit()).filter(e => e.action === 'remote-connect').length, 1)
   })
 
   it('stops relaying when the administrator closes it, the Mac goes away, or the phone is revoked', async () => {
-    const alice = rt.tunnels.list('alice').find(t => t.type === 'remote')
+    const alice = (await rt.tunnels.list('alice')).find(t => t.type === 'remote')
     assert.ok(alice !== undefined)
     const path = `/agent-work/remote/${alice.id}/api/session.list`
     const headers = { authorization: `Bearer ${phone.alice as string}` }
-    rt.tunnels.setClosed(alice.id, 'admin')
+    await rt.tunnels.setClosed(alice.id, 'admin')
     assert.equal((await send(port, 'POST', path, headers, '{}')).status, 403)
-    assert.equal(openProxy('alice', alice.id).reject, true)
-    rt.tunnels.setClosed(alice.id, null)
-    rt.tunnels.frp('CloseProxy', { user: { user: 'alice', metas: { token: device.alice?.token } }, proxy_name: `alice.${alice.id}` })
+    assert.equal((await openProxy('alice', alice.id)).reject, true)
+    await rt.tunnels.setClosed(alice.id, null)
+    await rt.tunnels.frp('CloseProxy', { user: { user: 'alice', metas: { token: device.alice?.token } }, proxy_name: `alice.${alice.id}` })
     const offline = await send(port, 'POST', path, headers, '{}')
     assert.equal(offline.status, 503)
-    openProxy('alice', alice.id)
-    rt.tunnels.setSettings({ remote: false })
+    await openProxy('alice', alice.id)
+    await rt.tunnels.setSettings({ remote: false })
     assert.equal((await send(port, 'POST', path, headers, '{}')).status, 403)
-    rt.tunnels.setSettings({ remote: true })
-    const id = store.listCredentials('alice').find(c => c.kind === 'phone')?.id as string
-    store.revokeCredential(id)
+    await rt.tunnels.setSettings({ remote: true })
+    const id = (await store.listCredentials('alice')).find(c => c.kind === 'phone')?.id as string
+    await store.revokeCredential(id)
     assert.equal((await send(port, 'POST', path, headers, '{}')).status, 401)
     // A Mac that signed out drops off the list.
-    store.revokeCredential(device.alice?.id as string)
+    await store.revokeCredential(device.alice?.id as string)
     const hosts = JSON.parse((await send(port, 'GET', '/agent-work/remote/hosts', { authorization: `Bearer ${phone.bob as string}` })).body) as { hosts: unknown[] }
     assert.equal(hosts.hosts.length, 1)
   })

@@ -4,7 +4,8 @@ import { request as httpRequest, createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { after, before, beforeEach, describe, it } from 'node:test'
 import type { GatewayConfig } from '../src/config.ts'
-import { Store } from '../src/db.ts'
+import type { Store } from '../src/db.ts'
+import { memoryStore } from './memory.ts'
 import { createRuntime, type Runtime } from '../src/runtime.ts'
 import type { Actor } from '../src/services.ts'
 
@@ -31,7 +32,7 @@ function send(port: number, method: string, path: string, headers: Record<string
 }
 
 describe('tunnels', () => {
-  const store = new Store(':memory:')
+  const store = memoryStore()
   let rt: Runtime
   let service: Server
   let port = 0
@@ -49,42 +50,42 @@ describe('tunnels', () => {
   const userOf = (member: string, device = member) => ({ user: member, metas: { token: token[device] }, run_id: 'r1' })
 
   before(async () => {
-    store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin', tunnels: true, ssh: true })
-    store.addMember({ name: 'bob', githubId: 2, githubLogin: 'bob', role: 'member', tunnels: true, ssh: true })
-    store.addMember({ name: 'carol', githubId: 3, githubLogin: 'carol', role: 'member', tunnels: true, ssh: false })
+    await store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin', tunnels: true, ssh: true })
+    await store.addMember({ name: 'bob', githubId: 2, githubLogin: 'bob', role: 'member', tunnels: true, ssh: true })
+    await store.addMember({ name: 'carol', githubId: 3, githubLogin: 'carol', role: 'member', tunnels: true, ssh: false })
     const config: GatewayConfig = {
-      publicOrigin: 'https://agent.example.com', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false, databasePath: ':memory:',
+      publicOrigin: 'https://agent.example.com', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false,
       github: { clientId: 'x', clientSecret: 'x', org: '', webUrl: 'http://127.0.0.1:9', apiUrl: 'http://127.0.0.1:9' },
       frps: { addr: 'frp.example.com', port: 443, protocol: 'wss', pluginSecret: SECRET, publicIp: '203.0.113.7', vhost: null },
     }
-    rt = createRuntime(config, { store, now: () => time })
+    rt = await createRuntime(config, { store, now: () => time })
     service = createServer((req, res) => { void rt.gateway(req, res) })
     port = await listen(service)
-    admin = { member: store.member('alice')!, ip: '127.0.0.1' }
+    admin = { member: (await store.member('alice'))!, ip: '127.0.0.1' }
     for (const [key, member] of [['alice', 'alice'], ['alice2', 'alice'], ['bob', 'bob'], ['carol', 'carol']] as const) {
-      token[key] = store.issueCredential(member, 'device', key, 86_400_000).token
+      token[key] = (await store.issueCredential(member, 'device', key, 86_400_000)).token
     }
-    token.browser = store.issueCredential('alice', 'browser', 'Chrome', 86_400_000).token
-    token.key = store.issueCredential('alice', 'key', 'ci', 86_400_000).token
+    token.browser = (await store.issueCredential('alice', 'browser', 'Chrome', 86_400_000)).token
+    token.key = (await store.issueCredential('alice', 'key', 'ci', 86_400_000)).token
   })
 
-  after(() => { service.close() })
+  after(async () => { service.close() })
 
-  beforeEach(() => {
-    for (const t of rt.tunnels.list()) rt.tunnels.delete(t.id, store.member(t.member))
-    rt.tunnels.setSettings({ enabled: true, allowPublic: true, perMember: 5, ssh: true, publicTcp: false, portRange: '20000-20001' })
-    store.setTunnelGrants('alice', { tunnels: true, ssh: true })
+  beforeEach(async () => {
+    for (const t of await rt.tunnels.list()) await rt.tunnels.delete(t.id, await store.member(t.member))
+    await rt.tunnels.setSettings({ enabled: true, allowPublic: true, perMember: 5, ssh: true, publicTcp: false, portRange: '20000-20001' })
+    await store.setTunnelGrants('alice', { tunnels: true, ssh: true })
   })
 
   describe('domains', () => {
     it('must not be the service domain or its parent, and become usable once DNS and the certificate check out', async () => {
-      await assert.rejects(async () => { rt.admin.addTunnelDomain(admin, { name: 'agent.example.com' }) }, /公司服务所在的域名/u)
-      await assert.rejects(async () => { rt.admin.addTunnelDomain(admin, { name: 'example.com' }) }, /公司服务所在的域名/u)
-      await assert.rejects(async () => { rt.admin.addTunnelDomain(admin, { name: 'not a domain' }) }, /有效的域名/u)
-      const domain = rt.admin.addTunnelDomain(admin, { name: '*.t.example.net' })
+      await assert.rejects(async () => { await rt.admin.addTunnelDomain(admin, { name: 'agent.example.com' }) }, /公司服务所在的域名/u)
+      await assert.rejects(async () => { await rt.admin.addTunnelDomain(admin, { name: 'example.com' }) }, /公司服务所在的域名/u)
+      await assert.rejects(async () => { await rt.admin.addTunnelDomain(admin, { name: 'not a domain' }) }, /有效的域名/u)
+      const domain = await rt.admin.addTunnelDomain(admin, { name: '*.t.example.net' })
       assert.equal(domain.name, 't.example.net')
       assert.equal(domain.isDefault, true)
-      assert.deepEqual(rt.tunnels.usableDomains(), [])
+      assert.deepEqual(await rt.tunnels.usableDomains(), [])
       // A wildcard pointing elsewhere (no frps of ours behind it) is "wrong", and the certificate is not judged.
       const nowhere = async () => ({ tls: true, frps: false })
       assert.deepEqual(pick(await rt.tunnels.checkDomain('t.example.net', async () => ['198.51.100.1'], nowhere)), ['wrong', 'unknown'])
@@ -94,11 +95,11 @@ describe('tunnels', () => {
       assert.deepEqual(pick(await rt.tunnels.checkDomain('t.example.net', async () => ['104.21.0.1'], async () => ({ tls: false, frps: false }))), ['wrong', 'unknown'])
       // Straight to the server, with a certificate that does not verify.
       assert.deepEqual(pick(await rt.tunnels.checkDomain('t.example.net', async () => ['203.0.113.7'], async () => ({ tls: false, frps: false }))), ['ok', 'failed'])
-      rt.tunnels.markDomain('t.example.net', 'ok', 'ok')
-      rt.admin.addTunnelDomain(admin, { name: 'dev.example.org' })
-      await assert.rejects(async () => { rt.admin.setDefaultTunnelDomain(admin, 'dev.example.org') }, /就绪后/u)
-      rt.tunnels.markDomain('dev.example.org', 'ok', 'ok')
-      assert.deepEqual(rt.tunnels.usableDomains().map(d => d.name), ['t.example.net', 'dev.example.org'])
+      await rt.tunnels.markDomain('t.example.net', 'ok', 'ok')
+      await rt.admin.addTunnelDomain(admin, { name: 'dev.example.org' })
+      await assert.rejects(async () => { await rt.admin.setDefaultTunnelDomain(admin, 'dev.example.org') }, /就绪后/u)
+      await rt.tunnels.markDomain('dev.example.org', 'ok', 'ok')
+      assert.deepEqual((await rt.tunnels.usableDomains()).map(d => d.name), ['t.example.net', 'dev.example.org'])
     })
   })
 
@@ -126,10 +127,10 @@ describe('tunnels', () => {
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'http', name: 'Bad_Name', localPort: 1 })).status, 400)
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'http', name: 'x', localPort: 70000 })).status, 400)
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'http', name: 'x', localPort: 80, domain: 'evil.example' })).status, 400)
-      rt.tunnels.setSettings({ allowPublic: false })
+      await rt.tunnels.setSettings({ allowPublic: false })
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'http', name: 'open', localPort: 80, protection: 'public' })).status, 400)
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('carol'), { type: 'ssh', name: 'box', localPort: 22, sshAccess: 'all' })).status, 403)
-      rt.tunnels.setSettings({ perMember: 1 })
+      await rt.tunnels.setSettings({ perMember: 1 })
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'http', name: 'second', localPort: 80 })).status, 409)
       // Members change and delete only their own.
       const id = created.json().id as string
@@ -152,7 +153,7 @@ describe('tunnels', () => {
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'ssh', name: 'x', localPort: 22, sshAccess: ['nobody'] })).status, 400)
       // Public ports: only when allowed, from the range, until it runs out.
       assert.equal((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'ssh', name: 'pub', localPort: 22, sshAccess: 'all', publicPort: true })).status, 403)
-      rt.tunnels.setSettings({ publicTcp: true })
+      await rt.tunnels.setSettings({ publicTcp: true })
       const ports = []
       for (const name of ['p1', 'p2']) ports.push((await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'ssh', name, localPort: 22, sshAccess: 'all', publicPort: true })).json().publicPort)
       assert.deepEqual(ports, [20000, 20001])
@@ -179,14 +180,14 @@ describe('tunnels', () => {
       assert.equal((await frp('Login', { user: 'alice', metas: { token: token.browser } })).reject, true)
       assert.equal((await frp('Login', { user: 'alice', metas: {} })).reject, true)
       assert.equal((await frp('Login', { user: 'alice', privilege_key: 'anything' })).reject, true)
-      rt.tunnels.setSettings({ enabled: false })
+      await rt.tunnels.setSettings({ enabled: false })
       assert.equal((await frp('Login', { user: 'alice', metas: { token: token.alice } })).reject, true)
     })
 
     it('opens a web tunnel only as registered, from the device that registered it', async () => {
       const t = await web()
       assert.equal((await frp('NewProxy', httpProxy(t.id))).reject, false)
-      assert.equal(rt.tunnels.get(t.id)?.online, true)
+      assert.equal((await rt.tunnels.get(t.id))?.online, true)
       assert.equal((await frp('NewProxy', httpProxy(t.id, 'alice', 'alice2'))).reject, true, 'another device of the same member')
       assert.equal((await frp('NewProxy', { ...httpProxy(t.id), user: userOf('bob') })).reject, true, 'another member')
       assert.equal((await frp('NewProxy', httpProxy(t.id, 'alice', 'alice', { custom_domains: ['admin.t.example.net'] }))).reject, true, 'a host it was not given')
@@ -197,18 +198,18 @@ describe('tunnels', () => {
       assert.equal((await frp('NewProxy', httpProxy('tun_unknown'))).reject, true, 'not registered')
       assert.equal((await frp('NewProxy', { ...httpProxy(t.id), proxy_name: `alice.${t.id as string}-public`, proxy_type: 'tcp', remote_port: 20000 })).reject, true)
       // The grant withdrawn, or the domain no longer usable: refused.
-      store.setTunnelGrants('alice', { tunnels: false })
+      await store.setTunnelGrants('alice', { tunnels: false })
       assert.equal((await frp('NewProxy', httpProxy(t.id))).reject, true)
-      store.setTunnelGrants('alice', { tunnels: true })
-      rt.tunnels.markDomain('t.example.net', 'ok', 'failed')
+      await store.setTunnelGrants('alice', { tunnels: true })
+      await rt.tunnels.markDomain('t.example.net', 'ok', 'failed')
       assert.equal((await frp('NewProxy', httpProxy(t.id))).reject, true)
-      rt.tunnels.markDomain('t.example.net', 'ok', 'ok')
+      await rt.tunnels.markDomain('t.example.net', 'ok', 'ok')
     })
 
     it('opens an SSH tunnel only with its key and access list, and a public port only as allocated', async () => {
-      rt.tunnels.setSettings({ publicTcp: true })
+      await rt.tunnels.setSettings({ publicTcp: true })
       const t = (await send(port, 'POST', '/agent-work/tunnels', as('alice'), { type: 'ssh', name: 'box', localPort: 22, sshAccess: ['bob'], publicPort: true })).json()
-      const sk = rt.tunnels.forMember(store.member('alice')!).tunnels[0]!.secretKey
+      const sk = (await rt.tunnels.forMember((await store.member('alice'))!)).tunnels[0]!.secretKey
       const stcp = (extra: Record<string, unknown> = {}) => ({ user: userOf('alice'), proxy_name: `alice.${t.id as string}`, proxy_type: 'stcp', sk, allow_users: ['bob'], ...extra })
       assert.equal((await frp('NewProxy', stcp())).reject, false)
       assert.equal((await frp('NewProxy', stcp({ sk: 'guessed' }))).reject, true)
@@ -218,45 +219,45 @@ describe('tunnels', () => {
       const pub = (remote: number) => ({ user: userOf('alice'), proxy_name: `alice.${t.id as string}-public`, proxy_type: 'tcp', remote_port: remote })
       assert.equal((await frp('NewProxy', pub(t.publicPort))).reject, false)
       assert.equal((await frp('NewProxy', pub(22))).reject, true)
-      rt.tunnels.setSettings({ publicTcp: false })
+      await rt.tunnels.setSettings({ publicTcp: false })
       assert.equal((await frp('NewProxy', pub(t.publicPort))).reject, true)
-      rt.tunnels.setSettings({ ssh: false })
+      await rt.tunnels.setSettings({ ssh: false })
       assert.equal((await frp('NewProxy', stcp())).reject, true)
     })
 
     it('stops what an administrator closed, a revoked device, and a disabled member', async () => {
       const t = await web()
       assert.equal((await frp('NewProxy', httpProxy(t.id))).reject, false)
-      rt.admin.setTunnelClosed(admin, t.id, true)
-      assert.throws(() => { rt.admin.deleteTunnel(admin, t.id) }, /先关闭/u, 'still running at frps')
+      await rt.admin.setTunnelClosed(admin, t.id, true)
+      await assert.rejects(async () => { await rt.admin.deleteTunnel(admin, t.id) }, /先关闭/u, 'still running at frps')
       // The device's next heartbeat is refused, so frps drops it and asks about every tunnel again.
       assert.equal((await frp('Ping', { user: userOf('alice') })).reject, true)
       await frp('CloseProxy', { user: userOf('alice'), proxy_name: `alice.${t.id as string}` })
       assert.equal((await frp('Ping', { user: userOf('alice') })).reject, false)
       assert.equal((await frp('NewProxy', httpProxy(t.id))).reject, true)
       assert.equal((await frp('NewUserConn', { user: userOf('alice'), proxy_name: `alice.${t.id as string}`, proxy_type: 'http' })).reject, true)
-      rt.admin.setTunnelClosed(admin, t.id, false)
+      await rt.admin.setTunnelClosed(admin, t.id, false)
       assert.equal((await frp('NewProxy', httpProxy(t.id))).reject, false)
       // So does a withdrawn grant.
-      store.setTunnelGrants('alice', { tunnels: false })
+      await store.setTunnelGrants('alice', { tunnels: false })
       assert.equal((await frp('Ping', { user: userOf('alice') })).reject, true)
-      store.setTunnelGrants('alice', { tunnels: true })
+      await store.setTunnelGrants('alice', { tunnels: true })
       // Heartbeats keep it online; frps closes the client when they are refused.
       time += 60_000
       assert.equal((await frp('Ping', { user: userOf('alice') })).reject, false)
-      assert.equal(rt.tunnels.get(t.id)?.lastSeenAt, time)
+      assert.equal((await rt.tunnels.get(t.id))?.lastSeenAt, time)
       time += 10 * 60_000
-      assert.equal(rt.tunnels.get(t.id)?.online, false, 'not heard of for long: offline')
-      const bobs = store.issueCredential('bob', 'device', 'spare', 86_400_000)
+      assert.equal((await rt.tunnels.get(t.id))?.online, false, 'not heard of for long: offline')
+      const bobs = await store.issueCredential('bob', 'device', 'spare', 86_400_000)
       token.spare = bobs.token
-      store.revokeCredential(bobs.credential.id)
+      await store.revokeCredential(bobs.credential.id)
       assert.equal((await frp('Ping', { user: userOf('bob', 'spare') })).reject, true)
-      store.setStatus('bob', 'disabled')
+      await store.setStatus('bob', 'disabled')
       assert.equal((await frp('Ping', { user: userOf('bob') })).reject, true)
       assert.equal((await frp('Login', { user: 'bob', metas: { token: token.bob } })).reject, true)
-      store.setStatus('bob', 'active')
+      await store.setStatus('bob', 'active')
       await frp('CloseProxy', { user: userOf('alice'), proxy_name: `alice.${t.id as string}` })
-      assert.equal(rt.tunnels.get(t.id)?.online, false)
+      assert.equal((await rt.tunnels.get(t.id))?.online, false)
     })
   })
 })

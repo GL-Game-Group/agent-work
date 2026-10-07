@@ -10,8 +10,8 @@
  * member and hour. The vendors' voices come from their official voice lists,
  * fetched on demand; administrators choose which ones members see.
  */
-import type { DatabaseSync } from 'node:sqlite'
 import type { Store } from './db.ts'
+import type { Sql } from './sql.ts'
 import { Refusal } from './errors.ts'
 import { volcengineCredential, type Vendor, type Vendors } from './vendors.ts'
 
@@ -183,32 +183,32 @@ export function parseVolcengineVoices(body: string): ParsedVoice[] {
 }
 
 export class Voice {
-  private readonly db: DatabaseSync
+  private readonly db: Sql
   private readonly vendors: Vendors
   private readonly now: () => number
 
   constructor(store: Store, vendors: Vendors, now: () => number = Date.now) {
-    this.db = store.db
+    this.db = store.sql
     this.vendors = vendors
     this.now = now
   }
 
   /** The built-in voice vendors (千问语音, 火山语音). */
-  voiceVendors(): Vendor[] {
-    return this.vendors.listVendors().filter(v => v.type === 'voice')
+  async voiceVendors(): Promise<Vendor[]> {
+    return (await this.vendors.listVendors()).filter(v => v.type === 'voice')
   }
 
-  private voiceVendor(id: string): Vendor {
-    const vendor = this.vendors.vendor(id)
+  private async voiceVendor(id: string): Promise<Vendor> {
+    const vendor = await this.vendors.vendor(id)
     if (vendor?.type !== 'voice') throw new Refusal(404, `没有语音厂商 ${id}`)
     return vendor
   }
 
-  settings(): VoiceSettings {
-    const row = this.db.prepare(`select value from app_settings where key = 'voice'`).get() as { value: string } | undefined
+  async settings(): Promise<VoiceSettings> {
+    const row = await this.db.one<{ value: string }>(`select value from app_settings where key = 'voice'`)
     const saved = row === undefined ? {} : JSON.parse(row.value) as Partial<VoiceSettings>
     const vendors: Record<string, VoiceVendorSettings> = {}
-    for (const vendor of this.voiceVendors()) {
+    for (const vendor of await this.voiceVendors()) {
       const models = DEFAULT_MODELS[vendor.protocol ?? ''] ?? { asrModel: '', ttsModel: '' }
       vendors[vendor.id] = { asr: false, tts: false, ...models, ...saved.vendors?.[vendor.id] }
     }
@@ -220,8 +220,8 @@ export class Voice {
   }
 
   /** @param input - any of the settings; vendors by id, each with any of its fields. */
-  setSettings(input: Record<string, unknown>): VoiceSettings {
-    const next = this.settings()
+  async setSettings(input: Record<string, unknown>): Promise<VoiceSettings> {
+    const next = await this.settings()
     if (input.vendors !== undefined) {
       if (typeof input.vendors !== 'object' || input.vendors === null) throw new Refusal(400, '语音设置格式不正确')
       for (const [id, raw] of Object.entries(input.vendors as Record<string, unknown>)) {
@@ -250,15 +250,15 @@ export class Voice {
       if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Refusal(400, '每小时换取次数要在 1–1000 之间')
       next.tokensPerHour = limit
     }
-    this.db.prepare(`insert into app_settings (key, value) values ('voice', ?) on conflict (key) do update set value = excluded.value`).run(JSON.stringify(next))
+    await this.db.run(`insert into app_settings (key, value) values ('voice', ?) on conflict (key) do update set value = excluded.value`, [JSON.stringify(next)])
     return next
   }
 
   /** The voices of one vendor, or of all, in the vendor's order. */
-  catalog(vendor?: string): VoiceEntry[] {
-    const rows = (vendor === undefined
-      ? this.db.prepare('select * from voice_catalog order by vendor, position').all()
-      : this.db.prepare('select * from voice_catalog where vendor = ? order by position').all(vendor)) as unknown as CatalogRow[]
+  async catalog(vendor?: string): Promise<VoiceEntry[]> {
+    const rows = vendor === undefined
+      ? await this.db.query<CatalogRow>('select * from voice_catalog order by vendor, position')
+      : await this.db.query<CatalogRow>('select * from voice_catalog where vendor = ? order by position', [vendor])
     return rows.map(row => ({
       vendor: row.vendor, id: row.id, name: row.name, description: row.description, gender: row.gender, languages: row.languages,
       family: row.family, models: JSON.parse(row.models) as string[], sampleUrl: row.sample_url, enabled: row.enabled === 1,
@@ -266,9 +266,9 @@ export class Voice {
   }
 
   /** When a vendor's voices were last fetched. */
-  catalogAt(vendor: string): number | null {
-    const row = this.db.prepare('select max(updated_at) as at from voice_catalog where vendor = ?').get(vendor) as { at: number | null }
-    return row.at
+  async catalogAt(vendor: string): Promise<number | null> {
+    const row = await this.db.one<{ at: number | null }>('select max(updated_at) as at from voice_catalog where vendor = ?', [vendor])
+    return row?.at ?? null
   }
 
   /**
@@ -277,7 +277,7 @@ export class Voice {
    * A page the parser cannot read leaves the list as it was.
    */
   async refreshCatalog(id: string, fetchImpl: typeof fetch = fetch): Promise<{ voices: number; added: number }> {
-    const vendor = this.voiceVendor(id)
+    const vendor = await this.voiceVendor(id)
     const url = VOICE_LIST_URL[vendor.protocol ?? '']
     if (url === undefined) throw new Refusal(400, `${vendor.name} 没有官方音色列表`)
     let body: string
@@ -291,59 +291,48 @@ export class Voice {
     }
     const voices = vendor.protocol === 'dashscope' ? parseDashscopeVoices(body) : parseVolcengineVoices(body)
     if (voices.length === 0) throw new Refusal(502, `没能从 ${vendor.name} 的官方页面读出音色，页面可能改版了；音色列表保持不变`)
-    const before = new Map(this.catalog(id).map(v => [v.id, v.enabled]))
-    const first = before.size === 0
-    const now = this.now()
-    this.db.exec('begin')
-    try {
-      this.db.prepare('delete from voice_catalog where vendor = ?').run(id)
-      const insert = this.db.prepare(`insert into voice_catalog (vendor, id, name, description, gender, languages, family, models, sample_url, enabled, position, updated_at)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      voices.forEach((v, position) => {
+    return this.db.transaction(async (tx) => {
+      const before = new Map((await this.catalog(id)).map(v => [v.id, v.enabled]))
+      const first = before.size === 0
+      const now = this.now()
+      await tx.run('delete from voice_catalog where vendor = ?', [id])
+      for (const [position, v] of voices.entries()) {
         const enabled = before.get(v.id) ?? first
-        insert.run(id, v.id, v.name, v.description, v.gender, v.languages, v.family, JSON.stringify(v.models), v.sampleUrl, enabled ? 1 : 0, position, now)
-      })
-      this.db.exec('commit')
-    } catch (error) {
-      this.db.exec('rollback')
-      throw error
-    }
-    return { voices: voices.length, added: voices.filter(v => !before.has(v.id)).length }
+        await tx.run(`insert into voice_catalog (vendor, id, name, description, gender, languages, family, models, sample_url, enabled, position, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, v.id, v.name, v.description, v.gender, v.languages, v.family, JSON.stringify(v.models), v.sampleUrl, enabled ? 1 : 0, position, now])
+      }
+      return { voices: voices.length, added: voices.filter(v => !before.has(v.id)).length }
+    })
   }
 
   /** Exactly which of a vendor's voices members see. */
-  setEnabledVoices(vendor: string, ids: unknown): number {
-    this.voiceVendor(vendor)
+  async setEnabledVoices(vendor: string, ids: unknown): Promise<number> {
+    await this.voiceVendor(vendor)
     if (!Array.isArray(ids) || ids.some(v => typeof v !== 'string')) throw new Refusal(400, '音色列表格式不正确')
     const wanted = new Set(ids as string[])
-    this.db.exec('begin')
-    try {
-      this.db.prepare('update voice_catalog set enabled = 0 where vendor = ?').run(vendor)
-      const enable = this.db.prepare('update voice_catalog set enabled = 1 where vendor = ? and id = ?')
-      for (const id of wanted) enable.run(vendor, id)
-      this.db.exec('commit')
-    } catch (error) {
-      this.db.exec('rollback')
-      throw error
-    }
-    return this.catalog(vendor).filter(v => v.enabled).length
+    await this.db.transaction(async (tx) => {
+      await tx.run('update voice_catalog set enabled = 0 where vendor = ?', [vendor])
+      for (const id of wanted) await tx.run('update voice_catalog set enabled = 1 where vendor = ? and id = ?', [vendor, id])
+    })
+    return (await this.catalog(vendor)).filter(v => v.enabled).length
   }
 
   /** The member's usable key for a voice vendor, if any. */
-  private keyFor(member: string, vendor: Vendor): string | undefined {
-    const assignment = this.vendors.assignment(member, vendor.id)
+  private async keyFor(member: string, vendor: Vendor): Promise<string | undefined> {
+    const assignment = await this.vendors.assignment(member, vendor.id)
     if (assignment?.apiKey === null || assignment?.apiKey === undefined) return undefined
-    return this.vendors.key(assignment.apiKey)?.status === 'active' ? assignment.apiKey : undefined
+    return (await this.vendors.key(assignment.apiKey))?.status === 'active' ? assignment.apiKey : undefined
   }
 
   /** What the phone offers this member: the vendors switched on that the member holds a key for, with their voices. */
-  forMember(member: string) {
-    const settings = this.settings()
+  async forMember(member: string) {
+    const settings = await this.settings()
     const vendors = []
-    for (const vendor of this.voiceVendors()) {
+    for (const vendor of await this.voiceVendors()) {
       const s = settings.vendors[vendor.id]
-      if (s === undefined || (!s.asr && !s.tts) || this.keyFor(member, vendor) === undefined) continue
-      const voices = this.catalog(vendor.id)
+      if (s === undefined || (!s.asr && !s.tts) || await this.keyFor(member, vendor) === undefined) continue
+      const voices = (await this.catalog(vendor.id))
         .filter(v => v.enabled && (v.models.length === 0 || v.models.includes(s.ttsModel)))
         .map(({ id, name, description, gender, languages, family, sampleUrl }) => ({ id, name, description, gender, languages, family, sampleUrl }))
       vendors.push({
@@ -361,16 +350,16 @@ export class Voice {
    * the hour's trades are used up.
    */
   async issueToken(member: string, vendorId: unknown, fetchImpl: typeof fetch = fetch): Promise<VoiceToken> {
-    const vendor = this.voiceVendor(typeof vendorId === 'string' ? vendorId : '')
-    const settings = this.settings()
+    const vendor = await this.voiceVendor(typeof vendorId === 'string' ? vendorId : '')
+    const settings = await this.settings()
     const s = settings.vendors[vendor.id]
     if (s === undefined || (!s.asr && !s.tts)) throw new Refusal(403, `${vendor.name} 没有开放`)
-    const keyId = this.keyFor(member, vendor)
+    const keyId = await this.keyFor(member, vendor)
     if (keyId === undefined) throw new Refusal(403, `你还没有分配 ${vendor.name} 的 Key，请联系管理员`)
     const now = this.now()
-    const recent = this.db.prepare('select count(*) as n from voice_tokens where member = ? and at > ?').get(member, now - HOUR_MS) as { n: number }
-    if (recent.n >= settings.tokensPerHour) throw new Refusal(429, '语音用得太频繁，请稍后再试')
-    const secret = this.vendors.keySecret(keyId)
+    const recent = await this.db.one<{ n: number }>('select count(*) as n from voice_tokens where member = ? and at > ?', [member, now - HOUR_MS])
+    if ((recent?.n ?? 0) >= settings.tokensPerHour) throw new Refusal(429, '语音用得太频繁，请稍后再试')
+    const secret = await this.vendors.keySecret(keyId)
     const ttl = settings.tokenTtlSeconds
     const base = vendor.baseUrl ?? ''
     let token: VoiceToken
@@ -403,14 +392,13 @@ export class Voice {
       if (Refusal.is(error)) throw error
       throw new Refusal(502, `无法连接 ${vendor.name}`)
     }
-    this.db.prepare('insert into voice_tokens (member, vendor, at) values (?, ?, ?)').run(member, vendor.id, now)
-    this.db.prepare('delete from voice_tokens where at < ?').run(now - 24 * HOUR_MS)
+    await this.db.run('insert into voice_tokens (member, vendor, at) values (?, ?, ?)', [member, vendor.id, now])
+    await this.db.run('delete from voice_tokens where at < ?', [now - 24 * HOUR_MS])
     return token
   }
 
   /** Vendor tokens issued per member and vendor since a time (for the console). */
-  tokensSince(since: number): { member: string; vendor: string; count: number }[] {
-    return (this.db.prepare('select member, vendor, count(*) as count from voice_tokens where at > ? group by member, vendor order by member, vendor').all(since) as unknown as
-      { member: string; vendor: string; count: number }[]).map(row => ({ ...row }))
+  async tokensSince(since: number): Promise<{ member: string; vendor: string; count: number }[]> {
+    return this.db.query('select member, vendor, count(*) as count from voice_tokens where at > ? group by member, vendor order by member, vendor', [since])
   }
 }

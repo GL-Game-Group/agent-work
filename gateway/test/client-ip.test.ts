@@ -4,7 +4,7 @@ import { describe, it } from 'node:test'
 import { clientAddress } from '../src/server.ts'
 
 describe('client address', () => {
-  it('takes the edge header only when configured and holding one address', () => {
+  it('takes the edge header only when configured and holding one address', async () => {
     const behindCloudflare = { trustProxy: true, clientIpHeader: 'cf-connecting-ip' }
     assert.equal(clientAddress(behindCloudflare, '198.51.100.1, 172.18.0.1', '172.18.0.5', '203.0.113.9'), '203.0.113.9')
     assert.equal(clientAddress(behindCloudflare, '198.51.100.1, 172.18.0.1', '172.18.0.5', '2001:db8::1'), '2001:db8::1')
@@ -14,7 +14,7 @@ describe('client address', () => {
     assert.equal(clientAddress(behindCloudflare, '172.18.0.1', '172.18.0.5', undefined), '172.18.0.1')
   })
 
-  it('ignores the header when the deployment does not name it', () => {
+  it('ignores the header when the deployment does not name it', async () => {
     assert.equal(clientAddress({ trustProxy: true }, '172.18.0.1', '172.18.0.5', '203.0.113.9'), '172.18.0.1')
     assert.equal(clientAddress({ trustProxy: false }, '198.51.100.1', '127.0.0.1', '203.0.113.9'), '127.0.0.1')
   })

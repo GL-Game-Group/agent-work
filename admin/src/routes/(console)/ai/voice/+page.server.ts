@@ -1,7 +1,7 @@
 import { act, actor, getRuntime, requireAdmin, text } from '#lib/server/context.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = (event) => {
+export const load: PageServerLoad = async (event) => {
 	requireAdmin(event);
 	return getRuntime().admin.voice();
 };
@@ -10,8 +10,8 @@ export const actions: Actions = {
 	vendor: async (event) => {
 		const form = await event.request.formData();
 		const id = text(form, 'id');
-		return act(() => {
-			getRuntime().admin.setVoiceSettings(actor(event), {
+		return act(async () => {
+			await getRuntime().admin.setVoiceSettings(actor(event), {
 				vendors: { [id]: { asr: form.get('asr') === 'on', asrModel: text(form, 'asrModel'), tts: form.get('tts') === 'on', ttsModel: text(form, 'ttsModel') } }
 			});
 			return {};
@@ -19,8 +19,8 @@ export const actions: Actions = {
 	},
 	tokens: async (event) => {
 		const form = await event.request.formData();
-		return act(() => {
-			getRuntime().admin.setVoiceSettings(actor(event), { tokenTtlSeconds: text(form, 'tokenTtlSeconds'), tokensPerHour: text(form, 'tokensPerHour') });
+		return act(async () => {
+			await getRuntime().admin.setVoiceSettings(actor(event), { tokenTtlSeconds: text(form, 'tokenTtlSeconds'), tokensPerHour: text(form, 'tokensPerHour') });
 			return {};
 		});
 	},
@@ -32,6 +32,6 @@ export const actions: Actions = {
 		const form = await event.request.formData();
 		let ids: unknown;
 		try { ids = JSON.parse(text(form, 'ids')); } catch { ids = null; }
-		return act(() => ({ count: getRuntime().admin.setEnabledVoices(actor(event), text(form, 'vendor'), ids) }));
+		return act(async () => ({ count: await getRuntime().admin.setEnabledVoices(actor(event), text(form, 'vendor'), ids) }));
 	}
 };

@@ -4,7 +4,8 @@ import { request as httpRequest, createServer, type IncomingHttpHeaders, type Se
 import type { AddressInfo } from 'node:net'
 import { after, before, describe, it } from 'node:test'
 import type { GatewayConfig } from '../src/config.ts'
-import { Store } from '../src/db.ts'
+import type { Store } from '../src/db.ts'
+import { memoryStore } from './memory.ts'
 import { GitHub } from '../src/github.ts'
 import { SecretBox } from '../src/secrets.ts'
 import { MODEL_KEY_REF, createGateway } from '../src/server.ts'
@@ -72,8 +73,8 @@ describe('model gateway', () => {
       res.end(JSON.stringify({ id: 'm2', model: 'deepseek-pro', usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 3 } }))
     })
   })
-  const store = new Store(':memory:')
-  const bare = new Store(':memory:')
+  const store = memoryStore()
+  const bare = memoryStore()
   const vendors = new Vendors(store, SecretBox.fromEncoded(SECRET_KEY))
   let upstreamOrigin = ''
   let gateway: Server
@@ -86,13 +87,13 @@ describe('model gateway', () => {
   before(async () => {
     const upstreamPort = await listen(upstream)
     upstreamOrigin = `http://127.0.0.1:${String(upstreamPort)}`
-    store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'member' })
-    store.addMember({ name: 'bob', githubId: 2, githubLogin: 'bob', role: 'member' })
-    bare.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'member' })
-    device = store.issueCredential('alice', 'device', 'test', 60_000).token
-    browser = store.issueCredential('alice', 'browser', 'test', 60_000).token
+    await store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'member' })
+    await store.addMember({ name: 'bob', githubId: 2, githubLogin: 'bob', role: 'member' })
+    await bare.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'member' })
+    device = (await store.issueCredential('alice', 'device', 'test', 60_000)).token
+    browser = (await store.issueCredential('alice', 'browser', 'test', 60_000)).token
     const github = { clientId: 'x', clientSecret: 'x', org: '', webUrl: 'http://127.0.0.1:9', apiUrl: 'http://127.0.0.1:9' }
-    const base: GatewayConfig = { publicOrigin: 'https://agent.example', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false, databasePath: ':memory:', github, secretKey: SECRET_KEY }
+    const base: GatewayConfig = { publicOrigin: 'https://agent.example', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false, github, secretKey: SECRET_KEY }
     // The pre-v3 environment key is imported once, with DeepSeek enabled for the members of the day.
     gateway = createGateway({ config: { ...base, deepseek: { baseUrl: `${upstreamOrigin}/anthropic`, apiKey: 'sk-company' } }, store, github: new GitHub(github) })
     unconfigured = createGateway({ config: base, store: bare, github: new GitHub(github) })
@@ -100,13 +101,13 @@ describe('model gateway', () => {
     unconfiguredPort = await listen(unconfigured)
   })
 
-  after(() => { gateway.close(); unconfigured.close(); upstream.close(); store.close(); bare.close() })
+  after(async () => { gateway.close(); unconfigured.close(); upstream.close(); await store.close(); await bare.close() })
 
   const messages = (body: object, headers: Record<string, string>) =>
     send(port, 'POST', '/agent-work/llm/deepseek/v1/messages?beta=1', { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', ...headers }, JSON.stringify(body))
 
   it('forwards with the company key and records usage from a JSON response', async () => {
-    assert.deepEqual(vendors.assignments().map(a => a.member), ['alice', 'bob'], 'imported for every member')
+    assert.deepEqual((await vendors.assignments()).map(a => a.member), ['alice', 'bob'], 'imported for every member')
     const reply = await messages({ model: 'deepseek-v4-pro', messages: [] }, { 'x-api-key': device, 'cookie': 'a=b' })
     assert.equal(reply.status, 200)
     assert.equal(JSON.parse(reply.body).id, 'm2')
@@ -117,36 +118,36 @@ describe('model gateway', () => {
     assert.equal(request?.headers.cookie, undefined)
     assert.equal(request?.headers['anthropic-version'], '2023-06-01')
     assert.deepEqual(JSON.parse(request?.body ?? '{}'), { model: 'deepseek-v4-pro', messages: [] })
-    assert.equal(store.usageByKeySince(0)[0]?.requests, 1, 'usage is counted per key too')
-    assert.deepEqual(store.usageSince(0), [{ member: 'alice', requests: 1, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 3 }])
+    assert.equal((await store.usageByKeySince(0))[0]?.requests, 1, 'usage is counted per key too')
+    assert.deepEqual(await store.usageSince(0), [{ member: 'alice', requests: 1, inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 3 }])
   })
 
   it('streams events through unchanged and records their final usage', async () => {
     const reply = await messages({ model: 'deepseek-flash', stream: true, messages: [] }, { 'x-api-key': device })
     assert.equal(reply.body, SSE.join(''))
     assert.equal(reply.headers['set-cookie'], undefined)
-    const totals = store.usageSince(0)[0]
+    const totals = (await store.usageSince(0))[0]
     assert.deepEqual([totals?.requests, totals?.inputTokens, totals?.outputTokens, totals?.cacheReadTokens], [2, 130, 47, 80])
   })
 
   it('passes other endpoints without recording usage', async () => {
-    const before = store.usageSince(0)[0]?.requests
+    const before = (await store.usageSince(0))[0]?.requests
     const reply = await send(port, 'GET', '/agent-work/llm/deepseek/v1/models', { authorization: `Bearer ${device}` })
     assert.equal(reply.status, 200)
-    assert.equal(store.usageSince(0)[0]?.requests, before)
+    assert.equal((await store.usageSince(0))[0]?.requests, before)
   })
 
   it('refuses missing, browser and revoked credentials without calling upstream', async () => {
     const calls = seen.length
     assert.equal((await messages({}, {})).status, 401)
     assert.equal((await messages({}, { 'x-api-key': browser })).status, 401, 'browser sessions cannot spend model quota')
-    const id = store.listCredentials('alice').find(c => c.kind === 'device')?.id as string
-    store.revokeCredential(id)
+    const id = (await store.listCredentials('alice')).find(c => c.kind === 'device')?.id as string
+    await store.revokeCredential(id)
     const revoked = await messages({}, { 'x-api-key': device })
     assert.equal(revoked.status, 401)
     assert.equal(JSON.parse(revoked.body).error.type, 'authentication_error')
     assert.equal(seen.length, calls)
-    device = store.issueCredential('alice', 'device', 'test', 60_000).token
+    device = (await store.issueCredential('alice', 'device', 'test', 60_000)).token
   })
 
   it('refuses models the company has not offered without calling upstream', async () => {
@@ -158,7 +159,7 @@ describe('model gateway', () => {
   })
 
   it('refuses members who have no vendor enabled and hands them no model config', async () => {
-    const fresh = bare.issueCredential('alice', 'device', 'test', 60_000).token
+    const fresh = (await bare.issueCredential('alice', 'device', 'test', 60_000)).token
     assert.equal((await send(unconfiguredPort, 'POST', '/agent-work/llm/deepseek/v1/messages', { 'x-api-key': fresh, 'content-type': 'application/json' }, '{"model":"deepseek-flash"}')).status, 403)
     assert.equal((await send(unconfiguredPort, 'POST', '/agent-work/llm/nobody/v1/messages', { 'x-api-key': fresh }, '{}')).status, 404)
     const empty = JSON.parse((await send(unconfiguredPort, 'GET', '/agent-work/config', { authorization: `Bearer ${fresh}` })).body)
@@ -166,10 +167,10 @@ describe('model gateway', () => {
   })
 
   it('serves an OpenAI-compatible vendor with its own key and allowlist', async () => {
-    vendors.updateVendor('qwen', { name: '千问', protocol: 'openai', baseUrl: `${upstreamOrigin}/compatible-mode/v1`, compat: { thinkingFormat: 'qwen' } })
-    vendors.addKey('qwen', 'team', 'sk-qwen-company')
-    vendors.setModels('qwen', [{ id: 'qwen-plus', name: 'Qwen Plus' }, 'qwen-max'])
-    vendors.setMemberVendors('alice', ['deepseek', 'qwen'])
+    await vendors.updateVendor('qwen', { name: '千问', protocol: 'openai', baseUrl: `${upstreamOrigin}/compatible-mode/v1`, compat: { thinkingFormat: 'qwen' } })
+    await vendors.addKey('qwen', 'team', 'sk-qwen-company')
+    await vendors.setModels('qwen', [{ id: 'qwen-plus', name: 'Qwen Plus' }, 'qwen-max'])
+    await vendors.setMemberVendors('alice', ['deepseek', 'qwen'])
     const chat = (body: object) => send(port, 'POST', '/agent-work/llm/qwen/chat/completions', { 'content-type': 'application/json', authorization: `Bearer ${device}` }, JSON.stringify(body))
 
     const json = await chat({ model: 'qwen-plus', messages: [] })
@@ -179,27 +180,27 @@ describe('model gateway', () => {
     assert.equal(seen.at(-1)?.headers['x-api-key'], undefined)
     const streamed = await chat({ model: 'qwen-plus', stream: true, messages: [] })
     assert.equal(streamed.body, OPENAI_SSE.join(''))
-    const rows = store.db.prepare("select model, input_tokens as i, output_tokens as o, cache_read_tokens as c from llm_usage where vendor = 'qwen' order by id").all()
+    const rows = await store.sql.query("select model, input_tokens as i, output_tokens as o, cache_read_tokens as c from llm_usage where vendor = 'qwen' order by id")
     assert.deepEqual(rows.map(row => ({ ...row })), [{ model: 'qwen-plus', i: 50, o: 7, c: 0 }, { model: 'qwen-plus', i: 100, o: 9, c: 200 }])
 
     const refused = await chat({ model: 'qwen-turbo', messages: [] })
     assert.equal(refused.status, 403)
     assert.equal(JSON.parse(refused.body).error.type, 'permission_error', 'OpenAI-shaped error')
-    const bob = store.issueCredential('bob', 'device', 'test', 60_000).token
+    const bob = (await store.issueCredential('bob', 'device', 'test', 60_000)).token
     assert.equal((await send(port, 'POST', '/agent-work/llm/qwen/chat/completions', { 'content-type': 'application/json', authorization: `Bearer ${bob}` }, '{"model":"qwen-plus"}')).status, 403, 'bob has no Qwen')
 
-    const qwenKey = vendors.listKeys('qwen')[0]?.id as string
-    vendors.setKeyStatus(qwenKey, 'disabled')
+    const qwenKey = (await vendors.listKeys('qwen'))[0]?.id as string
+    await vendors.setKeyStatus(qwenKey, 'disabled')
     assert.equal((await chat({ model: 'qwen-plus', messages: [] })).status, 503, 'no active key left')
-    vendors.setKeyStatus(qwenKey, 'active')
+    await vendors.setKeyStatus(qwenKey, 'active')
   })
 
   it('hands each signed-in Host its own vendors, accounts and the public config', async () => {
-    vendors.addAccount('codex', 'team-codex@example.com', null)
-    vendors.setMemberVendors('alice', ['deepseek', 'qwen', 'codex'])
-    vendors.setPublic('oss.bucket', 'gl-work-sg', false, null)
-    vendors.setPublic('oss.accessKeySecret', 'oss-secret', true, null)
-    const fresh = store.issueCredential('alice', 'device', 'test', 60_000).token
+    await vendors.addAccount('codex', 'team-codex@example.com', null)
+    await vendors.setMemberVendors('alice', ['deepseek', 'qwen', 'codex'])
+    await vendors.setPublic('oss.bucket', 'gl-work-sg', false, null)
+    await vendors.setPublic('oss.accessKeySecret', 'oss-secret', true, null)
+    const fresh = (await store.issueCredential('alice', 'device', 'test', 60_000)).token
     assert.equal((await send(port, 'GET', '/agent-work/config')).status, 401)
     const config = JSON.parse((await send(port, 'GET', '/agent-work/config', { authorization: `Bearer ${fresh}` })).body)
     assert.deepEqual(config, {

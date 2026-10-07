@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import { Store } from '../../../gateway/src/db.ts'
+import { openPglite } from '../../../gateway/src/sql.ts'
 import { GitHub } from '../../../gateway/src/github.ts'
 import { PluginCatalog, packTarball, readPackage, sampleBundle } from '../../../gateway/src/plugins.ts'
 import { SecretBox } from '../../../gateway/src/secrets.ts'
@@ -40,7 +41,8 @@ const sleep = ms => new Promise((done) => { setTimeout(done, ms) })
 
 describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set AGENT_WORK_DSH' : false }, () => {
   const home = mkdtempSync(join(tmpdir(), 'aw-e2e-'))
-  const store = new Store(':memory:')
+  /** @type {Store} */
+  let store
   let gateway, github, host, gatewayOrigin, hostOrigin, cookie
 
   async function rpc(method, args = {}) {
@@ -94,13 +96,14 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     const gatewayPort = await freePort()
     gatewayOrigin = `http://127.0.0.1:${gatewayPort}`
     const config = {
-      publicOrigin: gatewayOrigin, listenHost: '127.0.0.1', listenPort: gatewayPort, trustProxy: false, databasePath: ':memory:',
+      publicOrigin: gatewayOrigin, listenHost: '127.0.0.1', listenPort: gatewayPort, trustProxy: false, dataDir: null,
       github: { clientId: 'id', clientSecret: 'secret', org: '', webUrl: githubOrigin, apiUrl: githubOrigin },
       // The upstream is never called here; the imported key only turns DeepSeek on for alice.
       secretKey: SECRET_KEY,
       deepseek: { baseUrl: 'http://127.0.0.1:9/anthropic', apiKey: 'sk-company' },
     }
-    store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice-gh', role: 'member' })
+    store = await Store.open(await openPglite())
+    await store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice-gh', role: 'member' })
     gateway = createGateway({ config, store, github: new GitHub(config.github), authRateLimit: { requests: 1000, windowMs: 60_000 } })
     await listen(gateway, gatewayPort)
 
@@ -128,11 +131,11 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     cookie = exchange.headers.get('set-cookie').split(';')[0]
   })
 
-  after(() => {
+  after(async () => {
     host?.kill()
     gateway?.close()
     github?.close()
-    store.close()
+    await store?.close()
     rmSync(home, { recursive: true, force: true })
   })
 
@@ -156,7 +159,7 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     const profile = await rpc('account/getProfile', { client: CLIENT })
     assert.deepEqual(profile, { status: 'ready', value: { id: 'alice', name: 'alice', contact: 'GitHub @alice-gh', avatarUrl: 'https://avatars.githubusercontent.com/u/101' } })
     assert.deepEqual(await rpc('account/getBalance', { client: CLIENT }), { status: 'ready', value: [], bonusWallets: [] })
-    assert.equal(store.listCredentials('alice').filter(c => c.kind === 'device').length, 1)
+    assert.equal((await store.listCredentials('alice')).filter(c => c.kind === 'device').length, 1)
   })
 
   async function deepseekSettings() {
@@ -191,9 +194,9 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     const pack = (name, version) => readPackage(packTarball(sampleBundle(name, version)))
     const meta = { permissions: ['读取系统配置'], preinstalled: false, status: 'published' }
     // This bundle is itself in the catalog (installed); a second one is not installed.
-    catalog.save(pack('@agent-work/dsh-team-bundle', '0.2.0'), 'https://oss.example/team.tgz', { ...meta, displayName: '团队插件', preinstalled: true })
-    catalog.save(pack('@agent-work/dsh-feishu', '0.3.0'), 'https://oss.example/feishu.tgz', { ...meta, displayName: '飞书通知' })
-    catalog.save(pack('@agent-work/dsh-hidden', '1.0.0'), 'https://oss.example/hidden.tgz', { ...meta, displayName: '未上架', status: 'hidden' })
+    await catalog.save(pack('@agent-work/dsh-team-bundle', '0.2.0'), 'https://oss.example/team.tgz', { ...meta, displayName: '团队插件', preinstalled: true })
+    await catalog.save(pack('@agent-work/dsh-feishu', '0.3.0'), 'https://oss.example/feishu.tgz', { ...meta, displayName: '飞书通知' })
+    await catalog.save(pack('@agent-work/dsh-hidden', '1.0.0'), 'https://oss.example/hidden.tgz', { ...meta, displayName: '未上架', status: 'hidden' })
     const response = await fetch(`${hostOrigin}/api/agent-work/company-plugins`, { headers: { cookie } })
     assert.equal(response.status, 200)
     const body = await response.json()
@@ -201,7 +204,7 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     assert.deepEqual(body.plugins.map(p => [p.name, p.installedVersion]), [['@agent-work/dsh-team-bundle', '0.1.0'], ['@agent-work/dsh-feishu', null]])
     assert.equal(body.plugins[1].integrity, readPackage(packTarball(sampleBundle('@agent-work/dsh-feishu', '0.3.0'))).integrity)
     let reported = []
-    for (let i = 0; i < 20 && reported.length === 0; i += 1) { await sleep(100); reported = catalog.installs() }
+    for (let i = 0; i < 20 && reported.length === 0; i += 1) { await sleep(100); reported = await catalog.installs() }
     assert.deepEqual(reported.map(r => [r.plugin, r.version]), [['@agent-work/dsh-team-bundle', '0.1.0']], 'the console learns what runs here')
     assert.equal((await fetch(`${hostOrigin}/api/agent-work/company-plugins`)).status, 401, 'only the signed-in window')
   })
@@ -219,12 +222,12 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     const ossOrigin = `http://127.0.0.1:${await listen(oss)}`
     try {
       const meta = { displayName: 'x', permissions: [], preinstalled: false, status: 'published' }
-      catalog.save(readPackage(hello), `${ossOrigin}/hello.tgz`, { ...meta, displayName: '你好' })
+      await catalog.save(readPackage(hello), `${ossOrigin}/hello.tgz`, { ...meta, displayName: '你好' })
       // Registered with one package's sha512, served another.
-      catalog.save({ ...readPackage(bundle('@agent-work/dsh-tampered', '1.0.0')) }, `${ossOrigin}/tampered.tgz`, meta)
+      await catalog.save({ ...readPackage(bundle('@agent-work/dsh-tampered', '1.0.0')) }, `${ossOrigin}/tampered.tgz`, meta)
       // The service refuses install scripts at registration; registered behind its back, the Plugin Manager must stop it too.
       const scripts = files['/scripts.tgz']
-      catalog.save({ name: '@agent-work/dsh-scripts', version: '1.0.0', description: null, size: scripts.length, dependencies: 0,
+      await catalog.save({ name: '@agent-work/dsh-scripts', version: '1.0.0', description: null, size: scripts.length, dependencies: 0,
         integrity: `sha512-${createHash('sha512').update(scripts).digest('base64')}` }, `${ossOrigin}/scripts.tgz`, meta)
       const install = name => fetch(`${hostOrigin}/api/agent-work/company-plugins/install`, {
         method: 'POST', headers: { cookie, origin: hostOrigin, 'content-type': 'application/json' }, body: JSON.stringify({ name }),
@@ -237,7 +240,7 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
       const listed = await (await fetch(`${hostOrigin}/api/agent-work/company-plugins`, { headers: { cookie } })).json()
       assert.equal(listed.plugins.find(p => p.name === '@agent-work/dsh-hello').installedVersion, '1.0.0')
       let reported = []
-      for (let i = 0; i < 20 && !reported.includes('@agent-work/dsh-hello'); i += 1) { await sleep(100); reported = catalog.installs().map(r => r.plugin) }
+      for (let i = 0; i < 20 && !reported.includes('@agent-work/dsh-hello'); i += 1) { await sleep(100); reported = (await catalog.installs()).map(r => r.plugin) }
       assert.ok(reported.includes('@agent-work/dsh-hello'), 'reported to the console')
 
       const tampered = await install('@agent-work/dsh-tampered')
@@ -255,9 +258,9 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
 
   it('applies an OpenAI-compatible vendor as a pi-ai route, and the offered DeepSeek models', async () => {
     const vendors = new Vendors(store, SecretBox.fromEncoded(SECRET_KEY))
-    vendors.addKey('qwen', 'team', 'sk-qwen-company')
-    vendors.setModels('qwen', [{ id: 'qwen-plus', name: 'Qwen Plus' }, 'qwen3-coder-plus'])
-    vendors.setMemberVendors('alice', ['deepseek', 'qwen'])
+    await vendors.addKey('qwen', 'team', 'sk-qwen-company')
+    await vendors.setModels('qwen', [{ id: 'qwen-plus', name: 'Qwen Plus' }, 'qwen3-coder-plus'])
+    await vendors.setMemberVendors('alice', ['deepseek', 'qwen'])
     const route = async () => (await rpc('settings/describe')).namespaces.find(ns => ns.ns === 'llm-pi-ai')?.value?.providers?.['company-qwen']
     for (let i = 0; i < 25 && await route() === undefined; i += 1) await sleep(200)
     const qwen = await route()
@@ -268,15 +271,15 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     assert.equal(qwen?.compat?.thinkingFormat, 'qwen')
     assert.deepEqual((await deepseekSettings()).value.models.map(m => m.id), ['deepseek-flash', 'deepseek-v4-pro'])
 
-    vendors.setMemberVendors('alice', ['deepseek'])
+    await vendors.setMemberVendors('alice', ['deepseek'])
     for (let i = 0; i < 25 && await route() !== undefined; i += 1) await sleep(200)
     assert.equal(await route(), undefined, 'a vendor taken away is removed again')
   })
 
   it('signs out locally and revokes the device on the service', async () => {
     assert.equal((await rpc('account/signOut', { client: CLIENT })).status, 'signed-out')
-    for (let i = 0; i < 50 && store.listCredentials('alice').length > 0; i += 1) await sleep(100)
-    assert.equal(store.listCredentials('alice').length, 0)
+    for (let i = 0; i < 50 && (await store.listCredentials('alice')).length > 0; i += 1) await sleep(100)
+    assert.equal((await store.listCredentials('alice')).length, 0)
     for (let i = 0; i < 25 && await modelKeyConfigured(); i += 1) await sleep(200)
     assert.equal(await modelKeyConfigured(), false, 'the device token no longer sits in the model key')
   })
@@ -286,7 +289,7 @@ describe('company account in a real Host', { skip: DSH_DIR === undefined ? 'set 
     const waiting = await until(s => s.attempt?.phase === 'waiting-browser', 'waiting-browser')
     await approveInBrowser(waiting.attempt.authorizeUrl, 'alice')
     await until(s => s.status === 'credential-stored', 'credential-stored')
-    for (const credential of store.listCredentials('alice')) store.revokeCredential(credential.id)
+    for (const credential of await store.listCredentials('alice')) await store.revokeCredential(credential.id)
     assert.deepEqual(await rpc('account/getProfile', { client: CLIENT }), { status: 'failed' })
     assert.equal((await rpc('account/getState')).status, 'signed-out')
   })

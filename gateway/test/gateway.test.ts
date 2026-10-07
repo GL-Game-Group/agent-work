@@ -4,7 +4,8 @@ import { request as httpRequest, createServer, type IncomingHttpHeaders, type Se
 import type { AddressInfo } from 'node:net'
 import { after, before, describe, it } from 'node:test'
 import type { GatewayConfig } from '../src/config.ts'
-import { Store } from '../src/db.ts'
+import type { Store } from '../src/db.ts'
+import { memoryStore } from './memory.ts'
 import { GitHub } from '../src/github.ts'
 import { createGateway } from '../src/server.ts'
 import { codeChallenge, randomSecret } from '../src/tokens.ts'
@@ -65,7 +66,7 @@ async function startGateway(github: FakeGitHub, store: Store, authRateLimit = { 
   const origin = `http://127.0.0.1:${String(port)}`
   const fake = `http://127.0.0.1:${String(githubPort)}`
   const config: GatewayConfig = {
-    publicOrigin: origin, listenHost: '127.0.0.1', listenPort: port, trustProxy: false, databasePath: ':memory:',
+    publicOrigin: origin, listenHost: '127.0.0.1', listenPort: port, trustProxy: false,
     github: { clientId: 'id', clientSecret: 'secret', org: ORG, webUrl: fake, apiUrl: fake },
   }
   const gateway = createGateway({ config, store, github: new GitHub(config.github), authRateLimit, webLogin })
@@ -75,7 +76,7 @@ async function startGateway(github: FakeGitHub, store: Store, authRateLimit = { 
 
 describe('company service sign-in', () => {
   const github = new FakeGitHub()
-  const store = new Store(':memory:')
+  const store = memoryStore()
   let gateway: Server
   let port = 0
   let origin = ''
@@ -86,17 +87,17 @@ describe('company service sign-in', () => {
     github.users.set('mallory', { id: 666, login: 'mallory', inOrg: true })
     github.users.set('outsider', { id: 103, login: 'outsider', inOrg: false })
     github.users.set('carol', { id: 104, login: 'carol', inOrg: true })
-    store.addMember({ name: 'alice', githubId: 101, githubLogin: 'old-alice-login', role: 'admin' })
-    store.addMember({ name: 'bob', githubId: 102, githubLogin: 'bob-gh', role: 'member' })
-    store.addMember({ name: 'outsider', githubId: 103, githubLogin: 'outsider', role: 'member' })
-    store.addMember({ name: 'carol', githubId: 104, githubLogin: 'carol', role: 'member' })
+    await store.addMember({ name: 'alice', githubId: 101, githubLogin: 'old-alice-login', role: 'admin' })
+    await store.addMember({ name: 'bob', githubId: 102, githubLogin: 'bob-gh', role: 'member' })
+    await store.addMember({ name: 'outsider', githubId: 103, githubLogin: 'outsider', role: 'member' })
+    await store.addMember({ name: 'carol', githubId: 104, githubLogin: 'carol', role: 'member' })
     ;({ gateway, port, origin } = await startGateway(github, store))
   })
 
-  after(() => {
+  after(async () => {
     gateway.close()
     github.server.close()
-    store.close()
+    await store.close()
   })
 
   async function browserLogin(githubUser: string): Promise<{ cookie: string; reply: Reply }> {
@@ -146,7 +147,7 @@ describe('company service sign-in', () => {
     assert.equal(reply.status, 303)
     assert.equal(reply.headers.location, '/agent-work/whoami')
     assert.match(reply.headers['set-cookie']?.[0] ?? '', /HttpOnly; SameSite=Lax/u)
-    assert.equal(store.member('alice')?.githubLogin, 'alice-gh', 'renamed GitHub login is refreshed')
+    assert.equal((await store.member('alice'))?.githubLogin, 'alice-gh', 'renamed GitHub login is refreshed')
     const me = JSON.parse((await whoami({ cookie })).body) as { member: string; role: string; credential: { kind: string } }
     assert.deepEqual([me.member, me.role, me.credential.kind], ['alice', 'admin', 'browser'])
   })
@@ -154,10 +155,10 @@ describe('company service sign-in', () => {
   it('refuses GitHub accounts that are not members, disabled, or outside the organization', async () => {
     assert.equal((await browserLogin('mallory')).reply.status, 403)
     assert.equal((await browserLogin('outsider')).reply.status, 403)
-    store.setStatus('carol', 'disabled')
+    await store.setStatus('carol', 'disabled')
     assert.equal((await browserLogin('carol')).reply.status, 403)
-    store.setStatus('carol', 'active')
-    assert.ok(store.recentAudit().some(entry => entry.action === 'login-denied' && entry.target === 'mallory'))
+    await store.setStatus('carol', 'active')
+    assert.ok((await store.recentAudit()).some(entry => entry.action === 'login-denied' && entry.target === 'mallory'))
   })
 
   it('rejects replayed OAuth state and never returns into the sign-in routes', async () => {
@@ -202,7 +203,7 @@ describe('company service sign-in', () => {
   it('cuts off revoked credentials, logged-out sessions, and disabled members', async () => {
     const token = await desktopLogin('bob')
     const id = (JSON.parse((await whoami({ authorization: `Bearer ${token}` })).body) as { credential: { id: string } }).credential.id
-    store.revokeCredential(id)
+    await store.revokeCredential(id)
     assert.equal((await whoami({ authorization: `Bearer ${token}` })).status, 401)
 
     const { cookie } = await browserLogin('alice')
@@ -210,15 +211,15 @@ describe('company service sign-in', () => {
     assert.equal((await whoami({ cookie })).status, 401)
 
     const fresh = await desktopLogin('bob')
-    store.setStatus('bob', 'disabled')
+    await store.setStatus('bob', 'disabled')
     assert.equal((await whoami({ authorization: `Bearer ${fresh}` })).status, 401)
-    store.setStatus('bob', 'active')
+    await store.setStatus('bob', 'active')
   })
 })
 
 describe('company service rate limit', () => {
   it('limits sign-in attempts per client address', async () => {
-    const store = new Store(':memory:')
+    const store = memoryStore()
     const github = new FakeGitHub()
     const { gateway, port } = await startGateway(github, store, { requests: 3, windowMs: 60_000 })
     try {
@@ -229,24 +230,24 @@ describe('company service rate limit', () => {
     } finally {
       gateway.close()
       github.server.close()
-      store.close()
+      await store.close()
     }
   })
 })
 
 describe('sign-in with the web console mounted', () => {
   const github = new FakeGitHub()
-  const store = new Store(':memory:')
+  const store = memoryStore()
   let gateway: Server
   let port = 0
 
   before(async () => {
-    store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice-gh', role: 'admin' })
+    await store.addMember({ name: 'alice', githubId: 101, githubLogin: 'alice-gh', role: 'admin' })
     github.users.set('mallory', { id: 666, login: 'mallory', inOrg: true })
     ;({ gateway, port } = await startGateway(github, store, undefined, true))
   })
 
-  after(() => { gateway.close(); github.server.close(); store.close() })
+  after(async () => { gateway.close(); github.server.close(); await store.close() })
 
   async function callback(githubUser: string, start: string): Promise<Reply> {
     const begin = await send(port, 'GET', start)

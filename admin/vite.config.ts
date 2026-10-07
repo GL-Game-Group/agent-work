@@ -25,10 +25,10 @@ function companyService(): Plugin {
 			let runtime;
 			if (envFile) {
 				const { loadConfig } = await import('@agent-work/gateway/config');
-				runtime = createRuntime(loadConfig());
+				runtime = await createRuntime(loadConfig());
 			} else {
 				const { startDevRuntime } = await import('@agent-work/gateway/dev-runtime');
-				({ runtime } = await startDevRuntime({ publicOrigin: DEV_ORIGIN, ...(process.env.AGENT_WORK_DEV_DB ? { databasePath: process.env.AGENT_WORK_DEV_DB } : {}) }));
+				({ runtime } = await startDevRuntime({ publicOrigin: DEV_ORIGIN, ...(process.env.AGENT_WORK_DEV_DB ? { dataDir: process.env.AGENT_WORK_DEV_DB } : {}) }));
 			}
 			setRuntime(runtime);
 			server.middlewares.use((req, res, next) => {

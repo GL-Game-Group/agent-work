@@ -17,10 +17,10 @@
  * Enabling a vendor for a member assigns the least-shared active key or a free
  * account; members left without one are served as soon as one is added.
  */
-import type { DatabaseSync } from 'node:sqlite'
 import { Refusal } from './errors.ts'
 import type { SecretBox } from './secrets.ts'
 import type { Store } from './db.ts'
+import type { Sql } from './sql.ts'
 import { randomSecret } from './tokens.ts'
 
 export type VendorType = 'api' | 'cli' | 'voice'
@@ -181,12 +181,12 @@ export function volcengineCredential(secret: string): { appId: string; token: st
 }
 
 export class Vendors {
-  private readonly db: DatabaseSync
+  private readonly db: Sql
   private readonly box: SecretBox | undefined
   private readonly now: () => number
 
   constructor(store: Store, box: SecretBox | undefined, now: () => number = Date.now) {
-    this.db = store.db
+    this.db = store.sql
     this.box = box
     this.now = now
   }
@@ -199,19 +199,24 @@ export class Vendors {
     return this.box
   }
 
-  // Vendors
-
-  listVendors(): Vendor[] {
-    return (this.db.prepare('select * from vendors order by builtin desc, created_at, rowid').all() as unknown as VendorRow[]).map(toVendor)
+  /** Writes that rebalance run as one transaction, so no one sees (or races) a half-assigned state. */
+  private atomically<T>(fn: () => Promise<T>): Promise<T> {
+    return this.db.transaction(fn)
   }
 
-  vendor(id: string): Vendor | undefined {
-    const row = this.db.prepare('select * from vendors where id = ?').get(id) as VendorRow | undefined
+  // Vendors
+
+  async listVendors(): Promise<Vendor[]> {
+    return (await this.db.query<VendorRow>('select * from vendors order by builtin desc, created_at, seq')).map(toVendor)
+  }
+
+  async vendor(id: string): Promise<Vendor | undefined> {
+    const row = await this.db.one<VendorRow>('select * from vendors where id = ?', [id])
     return row === undefined ? undefined : toVendor(row)
   }
 
-  mustVendor(id: string): Vendor {
-    const found = this.vendor(id)
+  async mustVendor(id: string): Promise<Vendor> {
+    const found = await this.vendor(id)
     if (found === undefined) throw new Refusal(404, `没有厂商 ${id}`)
     return found
   }
@@ -228,41 +233,40 @@ export class Vendors {
     return { name: text(input.name, '厂商名称', 40), type, protocol, baseUrl: upstreamUrl(input.baseUrl, '接口地址'), modelsUrl, compat: compatOf(input.compat) }
   }
 
-  addVendor(input: Record<string, unknown>): Vendor {
+  async addVendor(input: Record<string, unknown>): Promise<Vendor> {
     const id = typeof input.id === 'string' ? input.id.trim() : ''
     if (!VENDOR_ID.test(id)) throw new Refusal(400, '厂商标识只能用小写字母、数字和 -，以字母开头（2–31 个字符）')
-    if (this.vendor(id) !== undefined) throw new Refusal(409, `厂商标识 ${id} 已存在`)
+    if (await this.vendor(id) !== undefined) throw new Refusal(409, `厂商标识 ${id} 已存在`)
     const auth = input.auth
     if (auth !== 'key' && auth !== 'account') throw new Refusal(400, '登录方式只能是 key 或账号')
     const fields = this.vendorFields(input, auth)
-    this.db.prepare('insert into vendors (id, name, type, auth, protocol, base_url, models_url, compat, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, fields.name, fields.type, auth, fields.protocol, fields.baseUrl, fields.modelsUrl, fields.compat, this.now())
+    await this.db.run('insert into vendors (id, name, type, auth, protocol, base_url, models_url, compat, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, fields.name, fields.type, auth, fields.protocol, fields.baseUrl, fields.modelsUrl, fields.compat, this.now()])
     return this.mustVendor(id)
   }
 
   /** The id and login method stay; changing them would orphan keys, accounts and members' config. */
-  updateVendor(id: string, input: Record<string, unknown>): Vendor {
-    const vendor = this.mustVendor(id)
+  async updateVendor(id: string, input: Record<string, unknown>): Promise<Vendor> {
+    const vendor = await this.mustVendor(id)
     if (vendor.type === 'voice') {
-      this.db.prepare('update vendors set name = ? where id = ?').run(text(input.name, '厂商名称', 40), id)
+      await this.db.run('update vendors set name = ? where id = ?', [text(input.name, '厂商名称', 40), id])
       return this.mustVendor(id)
     }
     const fields = this.vendorFields({ type: vendor.type, ...input }, vendor.auth)
-    this.db.prepare('update vendors set name = ?, type = ?, protocol = ?, base_url = ?, models_url = ?, compat = ? where id = ?')
-      .run(fields.name, fields.type, fields.protocol, fields.baseUrl, fields.modelsUrl, fields.compat, id)
+    await this.db.run('update vendors set name = ?, type = ?, protocol = ?, base_url = ?, models_url = ?, compat = ? where id = ?',
+      [fields.name, fields.type, fields.protocol, fields.baseUrl, fields.modelsUrl, fields.compat, id])
     return this.mustVendor(id)
   }
 
-  deleteVendor(id: string): void {
-    this.mustVendor(id)
-    if (this.mustVendor(id).type === 'voice') throw new Refusal(409, '语音厂商是内置的，不能删除；不用时在“语音”里关闭')
-    const held = this.db.prepare('select (select count(*) from api_keys where vendor = ?) + (select count(*) from cli_accounts where vendor = ?) as n').get(id, id) as { n: number }
-    if (held.n > 0) throw new Refusal(409, '请先删除这个厂商下的 Key 或账号')
-    this.db.prepare('delete from vendors where id = ?').run(id)
+  async deleteVendor(id: string): Promise<void> {
+    if ((await this.mustVendor(id)).type === 'voice') throw new Refusal(409, '语音厂商是内置的，不能删除；不用时在“语音”里关闭')
+    const held = await this.db.one<{ n: number }>('select (select count(*) from api_keys where vendor = ?) + (select count(*) from cli_accounts where vendor = ?) as n', [id, id])
+    if ((held?.n ?? 0) > 0) throw new Refusal(409, '请先删除这个厂商下的 Key 或账号')
+    await this.db.run('delete from vendors where id = ?', [id])
   }
 
-  setModels(id: string, models: unknown): Vendor {
-    const vendor = this.mustVendor(id)
+  async setModels(id: string, models: unknown): Promise<Vendor> {
+    const vendor = await this.mustVendor(id)
     if (vendor.auth !== 'key') throw new Refusal(400, '账号登录的厂商没有模型配置')
     if (vendor.type === 'voice') throw new Refusal(400, '语音厂商的模型在“语音”里设置')
     if (!Array.isArray(models) || models.length > MAX_MODELS) throw new Refusal(400, `模型列表格式不正确（最多 ${String(MAX_MODELS)} 个）`)
@@ -277,7 +281,7 @@ export class Vendors {
       const name = typeof raw.name === 'string' && raw.name.trim() !== '' ? raw.name.trim().slice(0, 80) : undefined
       clean.push(name === undefined ? { id: modelId } : { id: modelId, name })
     }
-    this.db.prepare('update vendors set models = ? where id = ?').run(JSON.stringify(clean), id)
+    await this.db.run('update vendors set models = ? where id = ?', [JSON.stringify(clean), id])
     return this.mustVendor(id)
   }
 
@@ -286,12 +290,12 @@ export class Vendors {
    * @returns the vendor with its refreshed catalog.
    */
   async refreshCatalog(id: string, fetchImpl: typeof fetch = fetch): Promise<Vendor> {
-    const vendor = this.mustVendor(id)
+    const vendor = await this.mustVendor(id)
     if (vendor.auth !== 'key' || vendor.baseUrl === null) throw new Refusal(400, '账号登录的厂商没有模型列表')
     if (vendor.type === 'voice') throw new Refusal(400, '语音厂商的音色在“语音”里从官方更新')
-    const key = this.listKeys(id).find(k => k.status === 'active')
+    const key = (await this.listKeys(id)).find(k => k.status === 'active')
     if (key === undefined) throw new Refusal(409, '请先为这个厂商录入一个可用的 API Key')
-    const secret = this.keySecret(key.id)
+    const secret = await this.keySecret(key.id)
     const url = vendor.modelsUrl ?? `${vendor.baseUrl}${vendor.protocol === 'anthropic' ? '/v1/models?limit=1000' : '/models'}`
     let response: Response
     try {
@@ -309,30 +313,29 @@ export class Vendors {
       .map((entry: unknown) => typeof entry === 'object' && entry !== null ? (entry as { id?: unknown }).id : undefined)
       .filter((value): value is string => typeof value === 'string' && MODEL_ID.test(value))
     const catalog = [...new Set(ids)].sort()
-    this.db.prepare('update vendors set catalog = ?, catalog_at = ? where id = ?').run(JSON.stringify(catalog), this.now(), id)
+    await this.db.run('update vendors set catalog = ?, catalog_at = ? where id = ?', [JSON.stringify(catalog), this.now(), id])
     return this.mustVendor(id)
   }
 
   // API keys
 
-  listKeys(vendor?: string): ApiKey[] {
-    const columns = 'id, vendor, label, last4, mode, status, created_at as createdAt'
-    const rows = vendor === undefined
-      ? this.db.prepare(`select ${columns} from api_keys order by vendor, created_at`).all()
-      : this.db.prepare(`select ${columns} from api_keys where vendor = ? order by created_at`).all(vendor)
-    return (rows as unknown as ApiKey[]).map(row => ({ ...row }))
+  async listKeys(vendor?: string): Promise<ApiKey[]> {
+    const columns = 'id, vendor, label, last4, mode, status, created_at as "createdAt"'
+    return vendor === undefined
+      ? this.db.query<ApiKey>(`select ${columns} from api_keys order by vendor, created_at, seq`)
+      : this.db.query<ApiKey>(`select ${columns} from api_keys where vendor = ? order by created_at, seq`, [vendor])
   }
 
-  key(id: string): ApiKey | undefined {
-    return this.listKeys().find(k => k.id === id)
+  async key(id: string): Promise<ApiKey | undefined> {
+    return (await this.listKeys()).find(k => k.id === id)
   }
 
   /**
    * @param mode - shared keys serve several members; a dedicated key serves one.
    * @param member - for a dedicated key: hand it to this member at once.
    */
-  addKey(vendorId: string, label: unknown, secret: unknown, mode: unknown = 'shared', member: string | null = null): ApiKey {
-    const vendor = this.mustVendor(vendorId)
+  async addKey(vendorId: string, label: unknown, secret: unknown, mode: unknown = 'shared', member: string | null = null): Promise<ApiKey> {
+    const vendor = await this.mustVendor(vendorId)
     if (vendor.auth !== 'key') throw new Refusal(400, `${vendor.name} 使用账号登录，请到订阅与账号里添加`)
     if (mode !== 'shared' && mode !== 'dedicated') throw new Refusal(400, 'Key 类型只能是共享或独立')
     const plain = typeof secret === 'string' ? secret.trim() : ''
@@ -342,31 +345,38 @@ export class Vendors {
     if (member !== null && mode !== 'dedicated') throw new Refusal(400, '只有独立 Key 能直接指定成员')
     const sealed = this.sealer().seal(plain)
     const id = `key_${randomSecret().slice(0, 10)}`
-    this.db.prepare('insert into api_keys (id, vendor, label, secret, last4, mode, status, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, vendorId, text(label, 'Key 名称', 40), sealed, plain.slice(-4), mode, 'active', this.now())
-    if (member !== null) this.assign(member, vendorId, { mode: 'dedicated', apiKey: id })
-    this.rebalance()
-    return this.key(id) as ApiKey
+    const name = text(label, 'Key 名称', 40)
+    return this.atomically(async () => {
+      await this.db.run('insert into api_keys (id, vendor, label, secret, last4, mode, status, created_at) values (?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, vendorId, name, sealed, plain.slice(-4), mode, 'active', this.now()])
+      if (member !== null) await this.assign(member, vendorId, { mode: 'dedicated', apiKey: id })
+      await this.rebalance()
+      return await this.key(id) as ApiKey
+    })
   }
 
-  setKeyStatus(id: string, status: unknown): ApiKey {
+  async setKeyStatus(id: string, status: unknown): Promise<ApiKey> {
     if (status !== 'active' && status !== 'disabled') throw new Refusal(400, '状态只能是 active 或 disabled')
-    if (Number(this.db.prepare('update api_keys set status = ? where id = ?').run(status, id).changes) === 0) throw new Refusal(404, 'Key 不存在')
-    this.rebalance()
-    return this.key(id) as ApiKey
+    return this.atomically(async () => {
+      if (await this.db.run('update api_keys set status = ? where id = ?', [status, id]) === 0) throw new Refusal(404, 'Key 不存在')
+      await this.rebalance()
+      return await this.key(id) as ApiKey
+    })
   }
 
-  deleteKey(id: string): ApiKey {
-    const key = this.key(id)
-    if (key === undefined) throw new Refusal(404, 'Key 不存在')
-    this.db.prepare('delete from api_keys where id = ?').run(id)
-    this.rebalance()
-    return key
+  async deleteKey(id: string): Promise<ApiKey> {
+    return this.atomically(async () => {
+      const key = await this.key(id)
+      if (key === undefined) throw new Refusal(404, 'Key 不存在')
+      await this.db.run('delete from api_keys where id = ?', [id])
+      await this.rebalance()
+      return key
+    })
   }
 
   /** The plain key, for the gateway and model listing only. */
-  keySecret(id: string): string {
-    const row = this.db.prepare('select secret from api_keys where id = ?').get(id) as { secret: string } | undefined
+  async keySecret(id: string): Promise<string> {
+    const row = await this.db.one<{ secret: string }>('select secret from api_keys where id = ?', [id])
     if (row === undefined) throw new Refusal(404, 'Key 不存在')
     try { return this.sealer().open(row.secret) } catch (error) {
       if (error instanceof Refusal) throw error
@@ -376,14 +386,13 @@ export class Vendors {
 
   // Subscriptions and their accounts
 
-  listSubscriptions(): Subscription[] {
-    const rows = this.db.prepare(`select id, vendor, plan, seats, price, cycle, renews_at as renewsAt, owner, note, created_at as createdAt
-      from subscriptions order by vendor, created_at`).all() as unknown as Subscription[]
-    return rows.map(row => ({ ...row }))
+  async listSubscriptions(): Promise<Subscription[]> {
+    return this.db.query<Subscription>(`select id, vendor, plan, seats, price, cycle, renews_at as "renewsAt", owner, note, created_at as "createdAt"
+      from subscriptions order by vendor, created_at, seq`)
   }
 
-  subscription(id: string): Subscription | undefined {
-    return this.listSubscriptions().find(s => s.id === id)
+  async subscription(id: string): Promise<Subscription | undefined> {
+    return (await this.listSubscriptions()).find(s => s.id === id)
   }
 
   private subscriptionFields(input: Record<string, unknown>) {
@@ -396,68 +405,72 @@ export class Vendors {
     return { plan: text(input.plan, '套餐名称', 60), seats, price: optionalText(input.price, 40), cycle, renewsAt, owner: optionalText(input.owner, 31), note: optionalText(input.note) }
   }
 
-  addSubscription(input: Record<string, unknown>): Subscription {
-    const vendor = this.mustVendor(String(input.vendor ?? ''))
+  async addSubscription(input: Record<string, unknown>): Promise<Subscription> {
+    const vendor = await this.mustVendor(String(input.vendor ?? ''))
     if (vendor.auth !== 'account') throw new Refusal(400, `${vendor.name} 使用 API Key，没有订阅`)
     const f = this.subscriptionFields(input)
     const id = `sub_${randomSecret().slice(0, 10)}`
-    this.db.prepare('insert into subscriptions (id, vendor, plan, seats, price, cycle, renews_at, owner, note, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, vendor.id, f.plan, f.seats, f.price, f.cycle, f.renewsAt, f.owner, f.note, this.now())
-    return this.subscription(id) as Subscription
+    await this.db.run('insert into subscriptions (id, vendor, plan, seats, price, cycle, renews_at, owner, note, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, vendor.id, f.plan, f.seats, f.price, f.cycle, f.renewsAt, f.owner, f.note, this.now()])
+    return await this.subscription(id) as Subscription
   }
 
-  updateSubscription(id: string, input: Record<string, unknown>): Subscription {
-    if (this.subscription(id) === undefined) throw new Refusal(404, '订阅不存在')
+  async updateSubscription(id: string, input: Record<string, unknown>): Promise<Subscription> {
+    if (await this.subscription(id) === undefined) throw new Refusal(404, '订阅不存在')
     const f = this.subscriptionFields(input)
-    this.db.prepare('update subscriptions set plan = ?, seats = ?, price = ?, cycle = ?, renews_at = ?, owner = ?, note = ? where id = ?')
-      .run(f.plan, f.seats, f.price, f.cycle, f.renewsAt, f.owner, f.note, id)
-    return this.subscription(id) as Subscription
+    await this.db.run('update subscriptions set plan = ?, seats = ?, price = ?, cycle = ?, renews_at = ?, owner = ?, note = ? where id = ?',
+      [f.plan, f.seats, f.price, f.cycle, f.renewsAt, f.owner, f.note, id])
+    return await this.subscription(id) as Subscription
   }
 
   /** Accounts stay, without a subscription. */
-  deleteSubscription(id: string): Subscription {
-    const sub = this.subscription(id)
+  async deleteSubscription(id: string): Promise<Subscription> {
+    const sub = await this.subscription(id)
     if (sub === undefined) throw new Refusal(404, '订阅不存在')
-    this.db.prepare('delete from subscriptions where id = ?').run(id)
+    await this.db.run('delete from subscriptions where id = ?', [id])
     return sub
   }
 
-  listAccounts(vendor?: string): CliAccount[] {
-    const columns = 'id, vendor, subscription, account, note, created_at as createdAt'
-    const rows = vendor === undefined
-      ? this.db.prepare(`select ${columns} from cli_accounts order by vendor, account`).all()
-      : this.db.prepare(`select ${columns} from cli_accounts where vendor = ? order by account`).all(vendor)
-    return (rows as unknown as CliAccount[]).map(row => ({ ...row }))
+  async listAccounts(vendor?: string): Promise<CliAccount[]> {
+    const columns = 'id, vendor, subscription, account, note, created_at as "createdAt"'
+    return vendor === undefined
+      ? this.db.query<CliAccount>(`select ${columns} from cli_accounts order by vendor, account`)
+      : this.db.query<CliAccount>(`select ${columns} from cli_accounts where vendor = ? order by account`, [vendor])
   }
 
-  account(id: string): CliAccount | undefined {
-    return this.listAccounts().find(a => a.id === id)
+  async account(id: string): Promise<CliAccount | undefined> {
+    return (await this.listAccounts()).find(a => a.id === id)
   }
 
   /**
    * @param subscriptionId - the subscription the account belongs to; its vendor is the account's.
    * @param member - hand the account to this member at once; otherwise to the first member waiting.
    */
-  addAccount(vendorOrSubscription: string, account: unknown, note: unknown, member: string | null = null): CliAccount {
-    const sub = this.subscription(vendorOrSubscription)
-    const vendor = this.mustVendor(sub?.vendor ?? vendorOrSubscription)
+  async addAccount(vendorOrSubscription: string, account: unknown, note: unknown, member: string | null = null): Promise<CliAccount> {
+    const sub = await this.subscription(vendorOrSubscription)
+    const vendor = await this.mustVendor(sub?.vendor ?? vendorOrSubscription)
     if (vendor.auth !== 'account') throw new Refusal(400, `${vendor.name} 使用 API Key，请到 API Key 里添加`)
     const name = text(account, '账号', 120)
-    if (this.listAccounts(vendor.id).some(a => a.account === name)) throw new Refusal(409, `${vendor.name} 账号 ${name} 已存在`)
+    if ((await this.listAccounts(vendor.id)).some(a => a.account === name)) throw new Refusal(409, `${vendor.name} 账号 ${name} 已存在`)
     const id = `acct_${randomSecret().slice(0, 10)}`
-    this.db.prepare('insert into cli_accounts (id, vendor, subscription, account, note, created_at) values (?, ?, ?, ?, ?, ?)')
-      .run(id, vendor.id, sub?.id ?? null, name, optionalText(note), this.now())
-    if (member !== null) this.assign(member, vendor.id, { mode: 'account', cliAccount: id })
-    this.rebalance()
-    return this.account(id) as CliAccount
+    const remark = optionalText(note)
+    return this.atomically(async () => {
+      await this.db.run('insert into cli_accounts (id, vendor, subscription, account, note, created_at) values (?, ?, ?, ?, ?, ?)',
+        [id, vendor.id, sub?.id ?? null, name, remark, this.now()])
+      if (member !== null) await this.assign(member, vendor.id, { mode: 'account', cliAccount: id })
+      await this.rebalance()
+      return await this.account(id) as CliAccount
+    })
   }
 
-  deleteAccount(id: string): CliAccount {
-    const account = this.account(id)
-    if (account === undefined) throw new Refusal(404, '账号不存在')
-    this.db.prepare('delete from cli_accounts where id = ?').run(id)
-    this.rebalance()
-    return account
+  async deleteAccount(id: string): Promise<CliAccount> {
+    return this.atomically(async () => {
+      const account = await this.account(id)
+      if (account === undefined) throw new Refusal(404, '账号不存在')
+      await this.db.run('delete from cli_accounts where id = ?', [id])
+      await this.rebalance()
+      return account
+    })
   }
 
   /**
@@ -465,141 +478,143 @@ export class Vendors {
    * next rebalance would hand the same account straight back), and the account
    * goes to the next member waiting for one.
    */
-  releaseAccount(id: string): string | null {
-    const holder = this.assignments().find(a => a.cliAccount === id)
-    if (holder === undefined) return null
-    this.db.prepare('delete from member_vendors where member = ? and vendor = ?').run(holder.member, holder.vendor)
-    this.rebalance()
-    return holder.member
+  async releaseAccount(id: string): Promise<string | null> {
+    return this.atomically(async () => {
+      const holder = (await this.assignments()).find(a => a.cliAccount === id)
+      if (holder === undefined) return null
+      await this.db.run('delete from member_vendors where member = ? and vendor = ?', [holder.member, holder.vendor])
+      await this.rebalance()
+      return holder.member
+    })
   }
 
   // Members
 
-  assignments(member?: string): Assignment[] {
-    const columns = `member, vendor, coalesce(mode, 'shared') as mode, api_key as apiKey, cli_account as cliAccount`
-    const rows = member === undefined
-      ? this.db.prepare(`select ${columns} from member_vendors order by member, vendor`).all()
-      : this.db.prepare(`select ${columns} from member_vendors where member = ? order by vendor`).all(member)
-    return (rows as unknown as Assignment[]).map(row => ({ ...row }))
+  async assignments(member?: string): Promise<Assignment[]> {
+    const columns = `member, vendor, coalesce(mode, 'shared') as mode, api_key as "apiKey", cli_account as "cliAccount"`
+    return member === undefined
+      ? this.db.query<Assignment>(`select ${columns} from member_vendors order by member, vendor`)
+      : this.db.query<Assignment>(`select ${columns} from member_vendors where member = ? order by vendor`, [member])
   }
 
-  assignment(member: string, vendor: string): Assignment | undefined {
-    return this.assignments(member).find(a => a.vendor === vendor)
+  async assignment(member: string, vendor: string): Promise<Assignment | undefined> {
+    return (await this.assignments(member)).find(a => a.vendor === vendor)
   }
 
   /** Validate one vendor choice for a member: mode, and the named key or account if any. */
-  private choice(member: string, raw: { vendor?: unknown; mode?: unknown; apiKey?: unknown; cliAccount?: unknown }): [string, Choice] {
-    const vendor = this.mustVendor(typeof raw.vendor === 'string' ? raw.vendor : '')
+  private async choice(member: string, raw: { vendor?: unknown; mode?: unknown; apiKey?: unknown; cliAccount?: unknown }): Promise<[string, Choice]> {
+    const vendor = await this.mustVendor(typeof raw.vendor === 'string' ? raw.vendor : '')
     const mode = raw.mode ?? (vendor.auth === 'account' ? 'account' : 'shared')
     if (vendor.auth === 'account' ? mode !== 'account' : mode !== 'shared' && mode !== 'dedicated') {
       throw new Refusal(400, `${vendor.name} 不能用这种分配方式`)
     }
     const choice: Choice = { mode: mode as AssignMode }
     if (raw.apiKey !== undefined && raw.apiKey !== '') {
-      const key = raw.apiKey === null ? undefined : this.key(String(raw.apiKey))
+      const key = raw.apiKey === null ? undefined : await this.key(String(raw.apiKey))
       if (raw.apiKey !== null && (key === undefined || key.vendor !== vendor.id)) throw new Refusal(400, `Key 不属于 ${vendor.name}`)
       if (key !== undefined && key.status !== 'active') throw new Refusal(409, `Key ${key.label} 已停用`)
       if (key !== undefined && key.mode !== mode) throw new Refusal(400, `${key.label} 是${key.mode === 'dedicated' ? '独立' : '共享'} Key，和分配方式不符`)
-      const holder = key?.mode === 'dedicated' ? this.assignments().find(a => a.apiKey === key.id && a.member !== member) : undefined
+      const holder = key?.mode === 'dedicated' ? (await this.assignments()).find(a => a.apiKey === key.id && a.member !== member) : undefined
       if (holder !== undefined) throw new Refusal(409, `独立 Key ${key?.label ?? ''} 已分配给 ${holder.member}`)
       choice.apiKey = key?.id ?? null
     }
     if (raw.cliAccount !== undefined && raw.cliAccount !== '') {
-      const account = raw.cliAccount === null ? undefined : this.account(String(raw.cliAccount))
+      const account = raw.cliAccount === null ? undefined : await this.account(String(raw.cliAccount))
       if (raw.cliAccount !== null && (account === undefined || account.vendor !== vendor.id)) throw new Refusal(400, `账号不属于 ${vendor.name}`)
-      const holder = account === undefined ? undefined : this.assignments().find(a => a.cliAccount === account.id && a.member !== member)
+      const holder = account === undefined ? undefined : (await this.assignments()).find(a => a.cliAccount === account.id && a.member !== member)
       if (holder !== undefined) throw new Refusal(409, `账号 ${account?.account ?? ''} 已分配给 ${holder.member}`)
       choice.cliAccount = account?.id ?? null
     }
     return [vendor.id, choice]
   }
 
-  private write(member: string, vendor: string, choice: Choice): void {
-    this.db.prepare('insert into member_vendors (member, vendor, mode, created_at) values (?, ?, ?, ?) on conflict do nothing').run(member, vendor, choice.mode, this.now())
-    const current = this.assignment(member, vendor)
+  private async write(member: string, vendor: string, choice: Choice): Promise<void> {
+    await this.db.run('insert into member_vendors (member, vendor, mode, created_at) values (?, ?, ?, ?) on conflict do nothing', [member, vendor, choice.mode, this.now()])
+    const current = await this.assignment(member, vendor)
     // Switching between shared and dedicated drops the key held under the other mode.
     const keepKey = current !== undefined && current.mode === choice.mode
-    this.db.prepare('update member_vendors set mode = ?, api_key = ?, cli_account = ? where member = ? and vendor = ?').run(
+    await this.db.run('update member_vendors set mode = ?, api_key = ?, cli_account = ? where member = ? and vendor = ?', [
       choice.mode,
       choice.apiKey !== undefined ? choice.apiKey : keepKey ? current.apiKey : null,
       choice.cliAccount !== undefined ? choice.cliAccount : current?.cliAccount ?? null,
       member, vendor,
-    )
+    ])
   }
 
   /** Enable one vendor for a member, or change how they reach it. */
-  assign(member: string, vendor: string, raw: { mode?: unknown; apiKey?: unknown; cliAccount?: unknown }): Assignment {
-    const [id, choice] = this.choice(member, { vendor, ...raw })
-    this.write(member, id, choice)
-    this.rebalance()
-    return this.assignment(member, id) as Assignment
+  async assign(member: string, vendor: string, raw: { mode?: unknown; apiKey?: unknown; cliAccount?: unknown }): Promise<Assignment> {
+    return this.atomically(async () => {
+      const [id, choice] = await this.choice(member, { vendor, ...raw })
+      await this.write(member, id, choice)
+      await this.rebalance()
+      return await this.assignment(member, id) as Assignment
+    })
   }
 
   /**
    * Set exactly which vendors a member may use, optionally with the mode and
    * the key or account for each; unnamed ones keep their current one or get one assigned.
    */
-  setMemberVendors(member: string, entries: unknown): Assignment[] {
+  async setMemberVendors(member: string, entries: unknown): Promise<Assignment[]> {
     if (!Array.isArray(entries)) throw new Refusal(400, '厂商列表格式不正确')
-    const wanted = new Map<string, Choice>()
-    for (const entry of entries as unknown[]) {
-      const [vendor, choice] = this.choice(member, typeof entry === 'string' ? { vendor: entry } : entry as Record<string, unknown>)
-      wanted.set(vendor, choice)
-    }
-    this.db.exec('begin')
-    try {
-      for (const current of this.assignments(member)) {
-        if (!wanted.has(current.vendor)) this.db.prepare('delete from member_vendors where member = ? and vendor = ?').run(member, current.vendor)
+    return this.atomically(async () => {
+      const wanted = new Map<string, Choice>()
+      for (const entry of entries as unknown[]) {
+        const [vendor, choice] = await this.choice(member, typeof entry === 'string' ? { vendor: entry } : entry as Record<string, unknown>)
+        wanted.set(vendor, choice)
       }
-      for (const [vendor, choice] of wanted) this.write(member, vendor, choice)
-      this.db.exec('commit')
-    } catch (error) {
-      this.db.exec('rollback')
-      throw error
-    }
-    this.rebalance()
-    return this.assignments(member)
+      for (const current of await this.assignments(member)) {
+        if (!wanted.has(current.vendor)) await this.db.run('delete from member_vendors where member = ? and vendor = ?', [member, current.vendor])
+      }
+      for (const [vendor, choice] of wanted) await this.write(member, vendor, choice)
+      await this.rebalance()
+      return this.assignments(member)
+    })
   }
 
   /**
    * Give every member without a usable key or account one, where one is available:
    * the least-shared active shared key, a dedicated key nobody holds, or a free account.
    */
-  rebalance(): void {
-    const keys = this.listKeys().filter(k => k.status === 'active')
-    const accounts = this.listAccounts()
-    const rows = this.assignments()
-    const load = new Map(keys.map(k => [k.id, rows.filter(a => a.apiKey === k.id).length]))
-    const heldAccounts = new Set(rows.map(a => a.cliAccount).filter(id => id !== null))
-    const set = (row: Assignment, column: 'api_key' | 'cli_account', value: string | null) => {
-      this.db.prepare(`update member_vendors set ${column} = ? where member = ? and vendor = ?`).run(value, row.member, row.vendor)
-    }
-    for (const row of rows) {
-      const vendor = this.vendor(row.vendor)
-      if (vendor?.auth === 'key') {
-        const held = keys.find(k => k.id === row.apiKey)
-        if (held !== undefined && held.mode === row.mode) continue
-        const pool = keys.filter(k => k.vendor === row.vendor && k.mode === row.mode)
-        const pick = row.mode === 'dedicated'
-          ? pool.find(k => (load.get(k.id) ?? 0) === 0)
-          // The least-shared active key, oldest first on ties.
-          : pool.sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0))[0]
-        if (pick !== undefined) load.set(pick.id, (load.get(pick.id) ?? 0) + 1)
-        if ((pick?.id ?? null) !== row.apiKey) set(row, 'api_key', pick?.id ?? null)
-      } else if (vendor?.auth === 'account' && row.cliAccount === null) {
-        const free = accounts.find(a => a.vendor === row.vendor && !heldAccounts.has(a.id))
-        if (free === undefined) continue
-        heldAccounts.add(free.id)
-        set(row, 'cli_account', free.id)
+  async rebalance(): Promise<void> {
+    await this.atomically(async () => {
+      const keys = (await this.listKeys()).filter(k => k.status === 'active')
+      const accounts = await this.listAccounts()
+      const rows = await this.assignments()
+      const vendors = new Map((await this.listVendors()).map(v => [v.id, v]))
+      const load = new Map(keys.map(k => [k.id, rows.filter(a => a.apiKey === k.id).length]))
+      const heldAccounts = new Set(rows.map(a => a.cliAccount).filter(id => id !== null))
+      const set = async (row: Assignment, column: 'api_key' | 'cli_account', value: string | null) => {
+        await this.db.run(`update member_vendors set ${column} = ? where member = ? and vendor = ?`, [value, row.member, row.vendor])
       }
-    }
+      for (const row of rows) {
+        const vendor = vendors.get(row.vendor)
+        if (vendor?.auth === 'key') {
+          const held = keys.find(k => k.id === row.apiKey)
+          if (held !== undefined && held.mode === row.mode) continue
+          const pool = keys.filter(k => k.vendor === row.vendor && k.mode === row.mode)
+          const pick = row.mode === 'dedicated'
+            ? pool.find(k => (load.get(k.id) ?? 0) === 0)
+            // The least-shared active key, oldest first on ties.
+            : pool.sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0))[0]
+          if (pick !== undefined) load.set(pick.id, (load.get(pick.id) ?? 0) + 1)
+          if ((pick?.id ?? null) !== row.apiKey) await set(row, 'api_key', pick?.id ?? null)
+        } else if (vendor?.auth === 'account' && row.cliAccount === null) {
+          const free = accounts.find(a => a.vendor === row.vendor && !heldAccounts.has(a.id))
+          if (free === undefined) continue
+          heldAccounts.add(free.id)
+          await set(row, 'cli_account', free.id)
+        }
+      }
+    })
   }
 
   // System config, for client plugins and members' tools
 
-  listPublic(): PublicEntry[] {
-    const rows = this.db.prepare('select key, value, secret, note, group_name, reads, last_read_at, updated_at from public_config order by group_name, key').all() as unknown as
-      { key: string; value: string; secret: number; note: string | null; group_name: string | null; reads: number; last_read_at: number | null; updated_at: number }[]
+  async listPublic(): Promise<PublicEntry[]> {
+    // SQLite sorted entries without a group first.
+    const rows = await this.db.query<{ key: string; value: string; secret: number; note: string | null; group_name: string | null; reads: number; last_read_at: number | null; updated_at: number }>(
+      'select key, value, secret, note, group_name, reads, last_read_at, updated_at from public_config order by group_name nulls first, key')
     return rows.map(row => ({
       key: row.key, value: row.secret === 1 ? null : row.value, secret: row.secret === 1, note: row.note, group: row.group_name,
       reads: row.reads, lastReadAt: row.last_read_at, updatedAt: row.updated_at,
@@ -609,11 +624,11 @@ export class Vendors {
   /**
    * @param value - undefined keeps a secret entry's current value (edit its note or flag without retyping it).
    */
-  setPublic(key: unknown, value: unknown, secret: unknown, note: unknown, group: unknown = undefined): PublicEntry {
+  async setPublic(key: unknown, value: unknown, secret: unknown, note: unknown, group: unknown = undefined): Promise<PublicEntry> {
     const name = typeof key === 'string' ? key.trim() : ''
     if (!PUBLIC_KEY.test(name)) throw new Refusal(400, '配置键只能用字母、数字、_ . -，以字母开头（最长 64 个字符）')
     const isSecret = secret === true
-    const current = this.db.prepare('select value, secret, group_name from public_config where key = ?').get(name) as { value: string; secret: number; group_name: string | null } | undefined
+    const current = await this.db.one<{ value: string; secret: number; group_name: string | null }>('select value, secret, group_name from public_config where key = ?', [name])
     let plain: string
     if (value === undefined || value === null) {
       if (current === undefined) throw new Refusal(400, '请填写配置值')
@@ -624,14 +639,14 @@ export class Vendors {
     }
     const groupName = group === undefined ? current?.group_name ?? null : optionalText(group, 40)
     const stored = isSecret ? this.sealer().seal(plain) : plain
-    this.db.prepare(`insert into public_config (key, value, secret, note, group_name, updated_at) values (?, ?, ?, ?, ?, ?)
-      on conflict (key) do update set value = excluded.value, secret = excluded.secret, note = excluded.note, group_name = excluded.group_name, updated_at = excluded.updated_at`)
-      .run(name, stored, isSecret ? 1 : 0, optionalText(note), groupName, this.now())
-    return this.listPublic().find(entry => entry.key === name) as PublicEntry
+    await this.db.run(`insert into public_config (key, value, secret, note, group_name, updated_at) values (?, ?, ?, ?, ?, ?)
+      on conflict (key) do update set value = excluded.value, secret = excluded.secret, note = excluded.note, group_name = excluded.group_name, updated_at = excluded.updated_at`,
+    [name, stored, isSecret ? 1 : 0, optionalText(note), groupName, this.now()])
+    return (await this.listPublic()).find(entry => entry.key === name) as PublicEntry
   }
 
-  deletePublic(key: string): void {
-    if (Number(this.db.prepare('delete from public_config where key = ?').run(key).changes) === 0) throw new Refusal(404, `没有配置 ${key}`)
+  async deletePublic(key: string): Promise<void> {
+    if (await this.db.run('delete from public_config where key = ?', [key]) === 0) throw new Refusal(404, `没有配置 ${key}`)
   }
 
   /**
@@ -639,10 +654,10 @@ export class Vendors {
    * Unreadable secrets are left out.
    * @param count - record the read (tools reading through the API, not Host syncs).
    */
-  publicValues(only?: string, count = false): Record<string, string> {
-    const rows = (only === undefined
-      ? this.db.prepare('select key, value, secret from public_config order by key').all()
-      : this.db.prepare('select key, value, secret from public_config where key = ?').all(only)) as unknown as { key: string; value: string; secret: number }[]
+  async publicValues(only?: string, count = false): Promise<Record<string, string>> {
+    const rows = only === undefined
+      ? await this.db.query<{ key: string; value: string; secret: number }>('select key, value, secret from public_config order by key')
+      : await this.db.query<{ key: string; value: string; secret: number }>('select key, value, secret from public_config where key = ?', [only])
     const values: Record<string, string> = {}
     for (const row of rows) {
       if (row.secret !== 1) values[row.key] = row.value
@@ -651,8 +666,7 @@ export class Vendors {
       }
     }
     if (count && rows.length > 0) {
-      const update = this.db.prepare('update public_config set reads = reads + 1, last_read_at = ? where key = ?')
-      for (const row of rows) update.run(this.now(), row.key)
+      for (const row of rows) await this.db.run('update public_config set reads = reads + 1, last_read_at = ? where key = ?', [this.now(), row.key])
     }
     return values
   }
@@ -662,12 +676,15 @@ export class Vendors {
    * the vendor store once, and enable DeepSeek for every member as before.
    * @returns whether a key was imported.
    */
-  importLegacyDeepSeek(legacy: { baseUrl: string; apiKey: string } | undefined, members: readonly string[]): boolean {
-    if (legacy === undefined || this.box === undefined || this.vendor('deepseek') === undefined || this.listKeys('deepseek').length > 0) return false
-    const fresh = this.assignments().length === 0
-    this.db.prepare('update vendors set base_url = ? where id = ?').run(legacy.baseUrl.replace(/\/+$/u, ''), 'deepseek')
-    this.addKey('deepseek', '从 .env 导入', legacy.apiKey, 'shared')
-    if (fresh) for (const member of members) this.setMemberVendors(member, ['deepseek'])
-    return true
+  async importLegacyDeepSeek(legacy: { baseUrl: string; apiKey: string } | undefined, members: readonly string[]): Promise<boolean> {
+    if (legacy === undefined || this.box === undefined || await this.vendor('deepseek') === undefined || (await this.listKeys('deepseek')).length > 0) return false
+    return this.atomically(async () => {
+      const fresh = (await this.assignments()).length === 0
+      await this.db.run('update vendors set base_url = ? where id = ?', [legacy.baseUrl.replace(/\/+$/u, ''), 'deepseek'])
+      await this.addKey('deepseek', '从 .env 导入', legacy.apiKey, 'shared')
+      if (fresh) for (const member of members) await this.setMemberVendors(member, ['deepseek'])
+      return true
+    })
   }
 }
+

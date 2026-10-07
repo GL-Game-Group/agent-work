@@ -13,7 +13,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const edge = runtime.config.clientIpHeader === undefined ? null : headers.get(runtime.config.clientIpHeader);
 	const ip = clientAddress(runtime.config, headers.get('x-forwarded-for') ?? undefined, event.getClientAddress(), edge);
 	const token = event.cookies.get(runtime.sessionCookie);
-	const signedIn = token ? runtime.store.authenticate(token, 'browser', ip) : undefined;
+	const signedIn = token ? await runtime.store.authenticate(token, 'browser', ip) : undefined;
 	event.locals.member = signedIn?.member ?? null;
 	event.locals.session = signedIn?.credential.id ?? null;
 	event.locals.ip = ip;

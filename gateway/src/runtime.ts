@@ -10,6 +10,7 @@ import type { GatewayConfig } from './config.ts'
 import { Store } from './db.ts'
 import { GitHub } from './github.ts'
 import { SecretBox } from './secrets.ts'
+import { openDatabase } from './sql.ts'
 import { PluginCatalog } from './plugins.ts'
 import { createGatewayHandler, importLegacyKey, sessionCookieName, type GatewayHandler } from './server.ts'
 import { Tunnels } from './tunnels.ts'
@@ -45,12 +46,13 @@ export interface RuntimeOptions {
 
 const KEY = Symbol.for('agent-work.runtime')
 
-export function createRuntime(config: GatewayConfig, options: RuntimeOptions = {}): Runtime {
-  const store = options.store ?? new Store(config.databasePath)
+/** Open (and migrate) the configured database unless a store is given, and build the service on it. */
+export async function createRuntime(config: GatewayConfig, options: RuntimeOptions = {}): Promise<Runtime> {
+  const store = options.store ?? await Store.open(await openDatabase(config))
   const github = options.github ?? new GitHub(config.github)
   const secrets = config.secretKey === undefined ? undefined : SecretBox.fromEncoded(config.secretKey)
   const vendors = new Vendors(store, secrets, options.now)
-  importLegacyKey(config, store, vendors, secrets !== undefined)
+  await importLegacyKey(config, store, vendors, secrets !== undefined)
   const plugins = new PluginCatalog(store, options.now)
   const tunnels = new Tunnels(store, config, options.now)
   const voice = new Voice(store, vendors, options.now)

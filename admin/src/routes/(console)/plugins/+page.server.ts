@@ -1,13 +1,13 @@
 import { act, actor, getRuntime, requireAdmin, text } from '#lib/server/context.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = (event) => {
+export const load: PageServerLoad = async (event) => {
 	requireAdmin(event);
 	const { admin } = getRuntime();
-	const members = new Map(admin.members().map((m) => [m.name, m]));
+	const members = new Map((await admin.members()).map((m) => [m.name, m]));
 	return {
-		...admin.plugins(),
-		desktops: admin.devices().filter((d) => d.kind === 'device').map((d) => ({
+		...(await admin.plugins()),
+		desktops: (await admin.devices()).filter((d) => d.kind === 'device').map((d) => ({
 			id: d.id, label: d.label, lastUsedAt: d.lastUsedAt, member: d.member,
 			displayName: members.get(d.member)?.displayName ?? d.member, githubId: members.get(d.member)?.githubId
 		}))
@@ -37,14 +37,14 @@ export const actions: Actions = {
 	},
 	describe: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.describePlugin(actor(event), text(form, 'name'), meta(form)); return {}; });
+		return act(async () => { await getRuntime().admin.describePlugin(actor(event), text(form, 'name'), meta(form)); return {}; });
 	},
 	status: async (event) => {
 		const form = await event.request.formData();
-		return act(() => ({ status: getRuntime().admin.setPluginStatus(actor(event), text(form, 'name'), text(form, 'status')).status }));
+		return act(async () => ({ status: (await getRuntime().admin.setPluginStatus(actor(event), text(form, 'name'), text(form, 'status'))).status }));
 	},
 	delete: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.deletePlugin(actor(event), text(form, 'name')); return {}; });
+		return act(async () => { await getRuntime().admin.deletePlugin(actor(event), text(form, 'name')); return {}; });
 	}
 };

@@ -16,7 +16,7 @@ import { startDevRuntime } from '../src/dev-runtime.ts'
 
 const port = Number(process.env.AGENT_WORK_DEV_PORT ?? '8787')
 const origin = `http://127.0.0.1:${String(port)}`
-const { runtime, close } = await startDevRuntime({ publicOrigin: origin, ...process.env.AGENT_WORK_DEV_DB ? { databasePath: process.env.AGENT_WORK_DEV_DB } : {} })
+const { runtime, close } = await startDevRuntime({ publicOrigin: origin, ...process.env.AGENT_WORK_DEV_DB ? { dataDir: process.env.AGENT_WORK_DEV_DB } : {} })
 const server = createServer((req, res) => {
   runtime.gateway(req, res).catch((error: unknown) => {
     console.error('dev: request failed', error)

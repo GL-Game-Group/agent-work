@@ -1,11 +1,12 @@
 import { getRuntime, requireAdmin } from '#lib/server/context.js';
 import type { LayoutServerLoad } from './$types';
 
-export const load: LayoutServerLoad = (event) => {
+export const load: LayoutServerLoad = async (event) => {
 	const viewer = requireAdmin(event);
 	const runtime = getRuntime();
-	const waiting = runtime.vendors.assignments().filter((a) => {
-		const vendor = runtime.vendors.vendor(a.vendor);
+	const vendors = new Map((await runtime.vendors.listVendors()).map((v) => [v.id, v]));
+	const waiting = (await runtime.vendors.assignments()).filter((a) => {
+		const vendor = vendors.get(a.vendor);
 		return vendor?.auth === 'key' ? a.apiKey === null : a.cliAccount === null;
 	}).length;
 	return {

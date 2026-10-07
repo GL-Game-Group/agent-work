@@ -5,7 +5,8 @@ import { request as httpRequest, createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { after, before, describe, it } from 'node:test'
 import type { GatewayConfig } from '../src/config.ts'
-import { Store } from '../src/db.ts'
+import type { Store } from '../src/db.ts'
+import { memoryStore } from './memory.ts'
 import { Refusal } from '../src/errors.ts'
 import { packTarball, readPackage, sampleBundle } from '../src/plugins.ts'
 import { createRuntime, type Runtime } from '../src/runtime.ts'
@@ -59,7 +60,7 @@ describe('plugin catalog', () => {
     if (body === undefined) { res.writeHead(404).end(); return }
     res.writeHead(200, { 'content-type': 'application/gzip' }).end(body)
   })
-  const store = new Store(':memory:')
+  const store = memoryStore()
   let rt: Runtime
   let service: Server
   let port = 0
@@ -70,23 +71,23 @@ describe('plugin catalog', () => {
 
   before(async () => {
     origin = `http://127.0.0.1:${String(await listen(oss))}`
-    store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin' })
+    await store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin' })
     const config: GatewayConfig = {
-      publicOrigin: 'http://127.0.0.1:1', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false, databasePath: ':memory:',
+      publicOrigin: 'http://127.0.0.1:1', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false,
       github: { clientId: 'x', clientSecret: 'x', org: '', webUrl: 'http://127.0.0.1:9', apiUrl: 'http://127.0.0.1:9' },
     }
-    rt = createRuntime(config, { store })
+    rt = await createRuntime(config, { store })
     service = createServer((req, res) => { void rt.gateway(req, res) })
     port = await listen(service)
-    alice = { member: store.member('alice')!, ip: null }
-    const issued = store.issueCredential('alice', 'device', 'mac', 60_000)
+    alice = { member: (await store.member('alice'))!, ip: null }
+    const issued = await store.issueCredential('alice', 'device', 'mac', 60_000)
     device = issued.token
     deviceId = issued.credential.id
   })
 
-  after(() => { service.close(); oss.close(); store.close() })
+  after(async () => { service.close(); oss.close(); await store.close() })
 
-  it('reads a bundle: name, version, size and the sha512 GL Work checks', () => {
+  it('reads a bundle: name, version, size and the sha512 GL Work checks', async () => {
     const tgz = packages['/feishu-0.1.0.tgz']!
     const pkg = readPackage(tgz)
     assert.deepEqual([pkg.name, pkg.version, pkg.description, pkg.size], ['@agent-work/dsh-feishu', '0.1.0', '把通知发到飞书群', tgz.length])
@@ -94,29 +95,29 @@ describe('plugin catalog', () => {
   })
 
   it('refuses what is not a company plugin', async () => {
-    assert.match(await refused(400, () => rt.admin.inspectPlugin(`${origin}/plain.tgz`)), /不是 DeepSeek Harness 插件/u)
-    assert.match(await refused(400, () => rt.admin.inspectPlugin(`${origin}/scripts.tgz`)), /postinstall/u)
-    await refused(400, () => rt.admin.inspectPlugin(`${origin}/garbage.tgz`))
-    assert.match(await refused(400, () => rt.admin.inspectPlugin(`${origin}/nopatch.tgz`)), /dsh\.bundle\.patch/u)
-    assert.match(await refused(400, () => rt.admin.inspectPlugin(`${origin}/lostpatch.tgz`)), /不在包里/u)
-    await refused(502, () => rt.admin.inspectPlugin(`${origin}/missing.tgz`))
-    await refused(400, () => rt.admin.inspectPlugin('http://oss.example.com/a.tgz'))
-    await refused(400, () => rt.admin.inspectPlugin('ftp://x'))
+    assert.match(await refused(400, async () => await rt.admin.inspectPlugin(`${origin}/plain.tgz`)), /不是 DeepSeek Harness 插件/u)
+    assert.match(await refused(400, async () => await rt.admin.inspectPlugin(`${origin}/scripts.tgz`)), /postinstall/u)
+    await refused(400, async () => await rt.admin.inspectPlugin(`${origin}/garbage.tgz`))
+    assert.match(await refused(400, async () => await rt.admin.inspectPlugin(`${origin}/nopatch.tgz`)), /dsh\.bundle\.patch/u)
+    assert.match(await refused(400, async () => await rt.admin.inspectPlugin(`${origin}/lostpatch.tgz`)), /不在包里/u)
+    await refused(502, async () => await rt.admin.inspectPlugin(`${origin}/missing.tgz`))
+    await refused(400, async () => await rt.admin.inspectPlugin('http://oss.example.com/a.tgz'))
+    await refused(400, async () => await rt.admin.inspectPlugin('ftp://x'))
   })
 
   it('registers, updates, describes and publishes plugins', async () => {
     const preview = await rt.admin.inspectPlugin(`${origin}/feishu-0.1.0.tgz`)
     assert.deepEqual([preview.name, preview.registered], ['@agent-work/dsh-feishu', null])
-    await refused(400, () => rt.admin.registerPlugin(alice, { url: `${origin}/feishu-0.1.0.tgz`, displayName: '' }))
+    await refused(400, async () => await rt.admin.registerPlugin(alice, { url: `${origin}/feishu-0.1.0.tgz`, displayName: '' }))
     const plugin = await rt.admin.registerPlugin(alice, { url: `${origin}/feishu-0.1.0.tgz`, displayName: '飞书通知', permissions: '读取系统配置 feishu.webhook\n发送网络请求到 open.feishu.cn' })
     assert.deepEqual([plugin.status, plugin.permissions.length], ['hidden', 2], 'registered hidden until published')
-    await refused(409, () => rt.admin.registerPlugin(alice, { url: `${origin}/feishu-0.1.0.tgz`, displayName: '又一次' }))
-    await refused(409, () => rt.admin.updatePlugin(alice, '@agent-work/dsh-feishu', `${origin}/other.tgz`))
+    await refused(409, async () => await rt.admin.registerPlugin(alice, { url: `${origin}/feishu-0.1.0.tgz`, displayName: '又一次' }))
+    await refused(409, async () => await rt.admin.updatePlugin(alice, '@agent-work/dsh-feishu', `${origin}/other.tgz`))
     const updated = await rt.admin.updatePlugin(alice, '@agent-work/dsh-feishu', `${origin}/feishu-0.2.0.tgz`)
     assert.deepEqual([updated.version, updated.displayName, updated.status], ['0.2.0', '飞书通知', 'hidden'], 'a new version keeps its description and status')
-    assert.equal(rt.admin.describePlugin(alice, '@agent-work/dsh-feishu', { displayName: '飞书机器人', permissions: [], preinstalled: false }).displayName, '飞书机器人')
+    assert.equal((await rt.admin.describePlugin(alice, '@agent-work/dsh-feishu', { displayName: '飞书机器人', permissions: [], preinstalled: false })).displayName, '飞书机器人')
     await rt.admin.registerPlugin(alice, { url: `${origin}/other.tgz`, displayName: '其他', publish: true })
-    const actions = rt.admin.auditLog().map(e => e.action)
+    const actions = (await rt.admin.auditLog()).map(e => e.action)
     assert.ok(['plugin-add', 'plugin-update', 'plugin-describe'].every(a => actions.includes(a)))
   })
 
@@ -124,12 +125,12 @@ describe('plugin catalog', () => {
     const bearer = { authorization: `Bearer ${device}` }
     let listed = (await send(port, 'GET', '/agent-work/plugins', bearer)).json()
     assert.deepEqual(listed.plugins.map((p: { name: string }) => p.name), ['@agent-work/dsh-other'])
-    rt.admin.setPluginStatus(alice, '@agent-work/dsh-feishu', 'published')
+    await rt.admin.setPluginStatus(alice, '@agent-work/dsh-feishu', 'published')
     listed = (await send(port, 'GET', '/agent-work/plugins', bearer)).json()
     const feishu = listed.plugins.find((p: { name: string }) => p.name === '@agent-work/dsh-feishu')
     assert.deepEqual([feishu.version, feishu.url, feishu.integrity], ['0.2.0', `${origin}/feishu-0.2.0.tgz`, readPackage(packages['/feishu-0.2.0.tgz']!).integrity])
     assert.equal((await send(port, 'GET', '/agent-work/plugins')).status, 401)
-    const key = store.issueCredential('alice', 'key', 'script', 60_000).token
+    const key = (await store.issueCredential('alice', 'key', 'script', 60_000)).token
     assert.equal((await send(port, 'GET', '/agent-work/plugins', { authorization: `Bearer ${key}` })).status, 403, 'internal keys are not desktops')
   })
 
@@ -139,11 +140,11 @@ describe('plugin catalog', () => {
       plugins: [{ name: '@agent-work/dsh-feishu', version: '0.1.0' }, { name: 'left-pad', version: '1.0.0' }, { name: 42 }],
     })
     assert.equal(reported.json().recorded, 1, 'only catalog plugins are kept')
-    assert.deepEqual(rt.admin.plugins().installs.map(i => [i.credential, i.plugin, i.version]), [[deviceId, '@agent-work/dsh-feishu', '0.1.0']])
+    assert.deepEqual((await rt.admin.plugins()).installs.map(i => [i.credential, i.plugin, i.version]), [[deviceId, '@agent-work/dsh-feishu', '0.1.0']])
     assert.equal((await send(port, 'POST', '/agent-work/plugins/installed', bearer, 'nope')).status, 400)
-    store.revokeCredential(deviceId)
-    assert.deepEqual(rt.admin.plugins().installs, [], 'revoked devices drop out')
-    rt.admin.deletePlugin(alice, '@agent-work/dsh-feishu')
-    await refused(404, () => rt.admin.setPluginStatus(alice, '@agent-work/dsh-feishu', 'hidden'))
+    await store.revokeCredential(deviceId)
+    assert.deepEqual((await rt.admin.plugins()).installs, [], 'revoked devices drop out')
+    await rt.admin.deletePlugin(alice, '@agent-work/dsh-feishu')
+    await refused(404, async () => await rt.admin.setPluginStatus(alice, '@agent-work/dsh-feishu', 'hidden'))
   })
 })

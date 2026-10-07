@@ -206,9 +206,9 @@ export function createGateway(deps: GatewayDeps): Server {
 }
 
 /** Bring DEEPSEEK_API_KEY from the environment (the pre-console setup) into the vendor store once. */
-export function importLegacyKey(config: GatewayConfig, store: Store, vendors: Vendors, sealing: boolean): void {
-  if (vendors.importLegacyDeepSeek(config.deepseek, store.listMembers().map(m => m.name))) {
-    store.audit({ actor: null, action: 'key-import', target: DEEPSEEK_VENDOR, detail: 'DEEPSEEK_API_KEY from the environment', ip: null })
+export async function importLegacyKey(config: GatewayConfig, store: Store, vendors: Vendors, sealing: boolean): Promise<void> {
+  if (await vendors.importLegacyDeepSeek(config.deepseek, (await store.listMembers()).map(m => m.name))) {
+    await store.audit({ actor: null, action: 'key-import', target: DEEPSEEK_VENDOR, detail: 'DEEPSEEK_API_KEY from the environment', ip: null })
     console.log('gateway: imported DEEPSEEK_API_KEY into the vendor store; manage keys in the admin console from now on')
   } else if (config.deepseek !== undefined && !sealing) {
     console.warn('gateway: DEEPSEEK_API_KEY is set but AGENT_WORK_SECRET_KEY is not, so the key cannot be imported; the model gateway stays off')
@@ -222,6 +222,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
   const sessionCookie = sessionCookieName(config.publicOrigin)
   const callbackUrl = new URL(`${PREFIX}auth/github/callback`, config.publicOrigin).href
   const rateLimit = deps.authRateLimit ?? DEFAULT_AUTH_RATE_LIMIT
+  let ready: Promise<void> = Promise.resolve()
   const vendors = deps.vendors ?? ownVendors()
   const catalog = deps.plugins ?? new PluginCatalog(store, now)
   const tunnels = deps.tunnels ?? new Tunnels(store, config, now)
@@ -230,7 +231,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
   function ownVendors(): Vendors {
     const secrets = deps.secrets ?? (config.secretKey === undefined ? undefined : SecretBox.fromEncoded(config.secretKey))
     const created = new Vendors(store, secrets, now)
-    importLegacyKey(config, store, created, secrets !== undefined)
+    // Requests wait for the one-time import (the handler itself is created synchronously).
+    ready = importLegacyKey(config, store, created, secrets !== undefined)
     return created
   }
   const rateWindows = new Map<string, { start: number; count: number }>()
@@ -252,16 +254,16 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     return window.count > rateLimit.requests
   }
 
-  function authenticate(req: IncomingMessage): Authentication {
+  async function authenticate(req: IncomingMessage): Promise<Authentication> {
     const authorization = req.headers.authorization
     if (authorization !== undefined) {
       const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : ''
-      const result = store.authenticate(token, ['device', 'key', 'phone'], clientIp(req))
+      const result = await store.authenticate(token, ['device', 'key', 'phone'], clientIp(req))
       return result === undefined ? { kind: 'rejected' } : { kind: 'ok', principal: result, via: result.credential.kind as 'device' | 'key' | 'phone' }
     }
     const token = cookieValue(req, sessionCookie)
     if (token === undefined) return { kind: 'none' }
-    const result = store.authenticate(token, 'browser', clientIp(req))
+    const result = await store.authenticate(token, 'browser', clientIp(req))
     return result === undefined ? { kind: 'rejected' } : { kind: 'ok', principal: result, via: 'browser' }
   }
 
@@ -276,8 +278,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     return (site === 'cross-site' || site === 'same-site') && req.headers['sec-fetch-mode'] !== 'navigate'
   }
 
-  function audit(req: IncomingMessage, actor: string | null, action: string, target: string | null, detail: string | null = null): void {
-    store.audit({ actor, action, target, detail, ip: clientIp(req) })
+  async function audit(req: IncomingMessage, actor: string | null, action: string, target: string | null, detail: string | null = null): Promise<void> {
+    await store.audit({ actor, action, target, detail, ip: clientIp(req) })
   }
 
   /**
@@ -295,7 +297,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
   }
 
   async function signInCallback(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
-    const state = store.takeOAuthState(url.searchParams.get('state') ?? '')
+    const state = await store.takeOAuthState(url.searchParams.get('state') ?? '')
     if (state === undefined) { page(res, 400, '登录已过期', '请回到应用重新登录。'); return }
     if (url.searchParams.has('error')) { refuse(res, state, 403, 'cancelled', '已取消授权', '没有完成 GitHub 授权，请回到应用重新登录。'); return }
     let signedIn: Awaited<ReturnType<GitHub['signIn']>>
@@ -306,22 +308,22 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       return
     }
     const { user, inOrg } = signedIn
-    const member = store.memberByGithubId(user.id)
+    const member = await store.memberByGithubId(user.id)
     if (member === undefined || member.status !== 'active') {
-      audit(req, null, 'login-denied', user.login, member === undefined ? 'not a member' : 'member disabled')
+      await audit(req, null, 'login-denied', user.login, member === undefined ? 'not a member' : 'member disabled')
       refuse(res, state, 403, member === undefined ? 'not-member' : 'disabled', '没有访问权限', `GitHub 账号 ${user.login} 还没有开通，请联系管理员。`, user.login)
       return
     }
     if (!inOrg) {
-      audit(req, member.name, 'login-denied', user.login, `not in organization ${config.github.org}`)
+      await audit(req, member.name, 'login-denied', user.login, `not in organization ${config.github.org}`)
       refuse(res, state, 403, 'not-in-org', '没有访问权限', `需要先加入 GitHub 组织 ${config.github.org}，并允许本应用读取组织成员身份。`, user.login)
       return
     }
-    if (member.githubLogin !== user.login) store.updateGithubLogin(member.name, user.login)
+    if (member.githubLogin !== user.login) await store.updateGithubLogin(member.name, user.login)
     if (state.kind === 'web') {
       const label = browserLabel(req.headers['user-agent'])
-      const { credential, token } = store.issueCredential(member.name, 'browser', label, BROWSER_SESSION_TTL_MS)
-      audit(req, member.name, 'login', credential.id, 'browser')
+      const { credential, token } = await store.issueCredential(member.name, 'browser', label, BROWSER_SESSION_TTL_MS)
+      await audit(req, member.name, 'login', credential.id, 'browser')
       res.writeHead(303, {
         ...SECURITY_HEADERS,
         'location': safeReturnPath(state.returnTo),
@@ -331,8 +333,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       return
     }
     if (state.kind === 'phone') {
-      const code = store.saveLoginCode(member.name, state.codeChallenge as string, LOGIN_CODE_TTL_MS, 'phone')
-      audit(req, member.name, 'login-code', null, 'phone')
+      const code = await store.saveLoginCode(member.name, state.codeChallenge as string, LOGIN_CODE_TTL_MS, 'phone')
+      await audit(req, member.name, 'login-code', null, 'phone')
       const target = new URL(PHONE_REDIRECT)
       target.searchParams.set('code', code)
       target.searchParams.set('state', state.clientState as string)
@@ -340,8 +342,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       res.end()
       return
     }
-    const code = store.saveLoginCode(member.name, state.codeChallenge as string, LOGIN_CODE_TTL_MS)
-    audit(req, member.name, 'login-code', null, 'desktop')
+    const code = await store.saveLoginCode(member.name, state.codeChallenge as string, LOGIN_CODE_TTL_MS)
+    await audit(req, member.name, 'login-code', null, 'desktop')
     // The member's local Host serves this route while its sign-in attempt waits (the upstream account contract).
     const target = new URL(`http://127.0.0.1:${String(state.redirectPort)}/oauth/callback`)
     target.searchParams.set('code', code)
@@ -359,25 +361,25 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       json(res, 400, { error: 'invalid_request' })
       return
     }
-    const login = store.takeLoginCode(code)
+    const login = await store.takeLoginCode(code)
     if (login === undefined || login.kind !== kind || !sameSecret(codeChallenge(verifier), login.codeChallenge)) {
       json(res, 400, { error: 'invalid_grant' })
       return
     }
-    const member = store.member(login.member)
+    const member = await store.member(login.member)
     if (member === undefined || member.status !== 'active') { json(res, 403, { error: 'access_denied' }); return }
     const label = typeof body?.device_name === 'string' && body.device_name.trim() !== '' ? body.device_name.trim().slice(0, 64) : kind === 'phone' ? 'iPhone' : 'desktop'
     const { credential, token } = kind === 'phone'
-      ? store.issueCredential(member.name, 'phone', label, PHONE_TOKEN_TTL_MS)
-      : store.issueCredential(member.name, 'device', label, DEVICE_TOKEN_TTL_MS)
-    audit(req, member.name, 'login', credential.id, `${kind === 'phone' ? 'phone' : 'device'} ${label}`)
+      ? await store.issueCredential(member.name, 'phone', label, PHONE_TOKEN_TTL_MS)
+      : await store.issueCredential(member.name, 'device', label, DEVICE_TOKEN_TTL_MS)
+    await audit(req, member.name, 'login', credential.id, `${kind === 'phone' ? 'phone' : 'device'} ${label}`)
     json(res, 200, { token, member: member.name, displayName: member.displayName, role: member.role, expiresAt: credential.expiresAt })
   }
 
   /** The model gateway: device token in x-api-key or as Bearer (as each Host adapter sends its key), the member's company key upstream. */
   async function llm(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
     const [, vendorId = '', rest = '/'] = LLM_ROUTE.exec(url.pathname) ?? []
-    const vendor = vendors.vendor(vendorId)
+    const vendor = await vendors.vendor(vendorId)
     if (vendor === undefined || vendor.auth !== 'key' || vendor.baseUrl === null || (vendor.protocol !== 'anthropic' && vendor.protocol !== 'openai')) {
       llmError(res, 'anthropic', 404, 'not_found_error', '公司模型网关没有这个厂商。')
       return
@@ -387,24 +389,24 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     const bearer = req.headers.authorization?.startsWith('Bearer ') === true ? req.headers.authorization.slice('Bearer '.length) : undefined
     const token = typeof header === 'string' ? header : bearer
     // Desktop Hosts send their device token; members' own tools an internal key.
-    const principal = token === undefined ? undefined : store.authenticate(token, ['device', 'key'], clientIp(req))
+    const principal = token === undefined ? undefined : await store.authenticate(token, ['device', 'key'], clientIp(req))
     if (principal === undefined) {
       llmError(res, protocol, 401, 'authentication_error', '登录已失效或内部 Key 已吊销，请重新登录或换一个 Key。')
       return
     }
-    const assignment = vendors.assignment(principal.member.name, vendor.id)
+    const assignment = await vendors.assignment(principal.member.name, vendor.id)
     if (assignment === undefined) { llmError(res, protocol, 403, 'permission_error', `你还没有开通 ${vendor.name}，请联系管理员。`); return }
-    const key = assignment.apiKey === null ? undefined : vendors.key(assignment.apiKey)
+    const key = assignment.apiKey === null ? undefined : await vendors.key(assignment.apiKey)
     if (key?.status !== 'active') { llmError(res, protocol, 503, 'api_error', `公司还没有可用的 ${vendor.name} Key，请联系管理员。`); return }
     let apiKey: string
-    try { apiKey = vendors.keySecret(key.id) } catch {
+    try { apiKey = await vendors.keySecret(key.id) } catch {
       llmError(res, protocol, 503, 'api_error', `公司的 ${vendor.name} Key 暂时无法使用，请联系管理员。`)
       return
     }
     const usage = await forwardLlm(req, res, {
       baseUrl: vendor.baseUrl, apiKey, protocol: protocol, models: new Set(vendor.models.map(m => m.id)),
     }, rest + url.search)
-    if (usage !== undefined) store.recordUsage(principal.member.name, principal.credential.id, usage, { vendor: vendor.id, apiKey: key.id })
+    if (usage !== undefined) await store.recordUsage(principal.member.name, principal.credential.id, usage, { vendor: vendor.id, apiKey: key.id })
   }
 
   /** One key vendor as the Host's settings: the DeepSeek adapter, or a pi-ai route. */
@@ -436,27 +438,27 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
    * the member's key vendors through the gateway, the company accounts the
    * member signs in to CLI tools with, and public config for client plugins.
    */
-  function managedConfig(member: Member): object {
+  async function managedConfig(member: Member): Promise<object> {
     const settings: { ns: string; path: string[]; value: unknown }[] = []
     const cli: { vendor: string; name: string; protocol: string; baseUrl: string; keyRef: string }[] = []
     const accounts: { vendor: string; name: string; account: string }[] = []
-    for (const assignment of vendors.assignments(member.name)) {
-      const vendor = vendors.vendor(assignment.vendor)
+    for (const assignment of await vendors.assignments(member.name)) {
+      const vendor = await vendors.vendor(assignment.vendor)
       if (vendor === undefined) continue
       if (vendor.auth === 'account') {
-        const account = assignment.cliAccount === null ? undefined : vendors.account(assignment.cliAccount)
+        const account = assignment.cliAccount === null ? undefined : await vendors.account(assignment.cliAccount)
         if (account !== undefined) accounts.push({ vendor: vendor.id, name: vendor.name, account: account.account })
         continue
       }
       // Voice vendors are the phone's, through /agent-work/phone/voice.
       if (vendor.type === 'voice') continue
       // Nothing to offer until the member holds an active key.
-      if (assignment.apiKey === null || vendors.key(assignment.apiKey)?.status !== 'active' || vendor.protocol === null || vendor.models.length === 0) continue
+      if (assignment.apiKey === null || (await vendors.key(assignment.apiKey))?.status !== 'active' || vendor.protocol === null || vendor.models.length === 0) continue
       if (vendor.type === 'api') settings.push(...vendorSettings(vendor))
       else cli.push({ vendor: vendor.id, name: vendor.name, protocol: vendor.protocol, baseUrl: `${config.publicOrigin}${LLM_PREFIX}${vendor.id}`, keyRef: MODEL_KEY_REF })
     }
     const credentials = settings.length > 0 || cli.length > 0 ? [{ ref: MODEL_KEY_REF, from: 'device-token' }] : []
-    return { version: 2, settings, credentials, cli, accounts, public: vendors.publicValues() }
+    return { version: 2, settings, credentials, cli, accounts, public: await vendors.publicValues() }
   }
 
   /** Routes under /agent-work/, answered by the gateway itself. */
@@ -474,7 +476,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     }
     switch (route) {
       case `GET ${PREFIX}auth/github/start`: {
-        const state = store.saveOAuthState({ kind: 'web', returnTo: safeReturnPath(url.searchParams.get('return_to')), redirectPort: null, codeChallenge: null, clientState: null }, OAUTH_STATE_TTL_MS)
+        const state = await store.saveOAuthState({ kind: 'web', returnTo: safeReturnPath(url.searchParams.get('return_to')), redirectPort: null, codeChallenge: null, clientState: null }, OAUTH_STATE_TTL_MS)
         res.writeHead(302, { ...SECURITY_HEADERS, location: github.authorizeUrl(state, callbackUrl) })
         res.end()
         return
@@ -487,7 +489,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
           page(res, 400, '登录请求无效', '请回到桌面客户端重新登录。')
           return
         }
-        const state = store.saveOAuthState({ kind: 'desktop', returnTo: null, redirectPort: port, codeChallenge: challenge, clientState }, OAUTH_STATE_TTL_MS)
+        const state = await store.saveOAuthState({ kind: 'desktop', returnTo: null, redirectPort: port, codeChallenge: challenge, clientState }, OAUTH_STATE_TTL_MS)
         res.writeHead(302, { ...SECURITY_HEADERS, location: github.authorizeUrl(state, callbackUrl) })
         res.end()
         return
@@ -500,7 +502,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
           page(res, 400, '登录请求无效', '请回到 GL Work 重新登录。')
           return
         }
-        const state = store.saveOAuthState({ kind: 'phone', returnTo: null, redirectPort: null, codeChallenge: challenge, clientState }, OAUTH_STATE_TTL_MS)
+        const state = await store.saveOAuthState({ kind: 'phone', returnTo: null, redirectPort: null, codeChallenge: challenge, clientState }, OAUTH_STATE_TTL_MS)
         res.writeHead(302, { ...SECURITY_HEADERS, location: github.authorizeUrl(state, callbackUrl) })
         res.end()
         return
@@ -520,7 +522,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
         return
       // For the deployment's health checks: the process answers and its database reads.
       case `GET ${PREFIX}healthz`:
-        store.db.prepare('select 1').get()
+        await store.sql.one('select 1')
         json(res, 200, { ok: true }, { 'cache-control': 'no-store' })
         return
       // Account links in the desktop app (where Platform shows usage and top-up).
@@ -539,7 +541,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     if (auth.via === 'phone') { await phoneRoute(req, res, url, route, auth.principal); return }
     const system = req.method === 'GET' ? SYSTEM_CONFIG.exec(url.pathname) : null
     if (system !== null) {
-      const values = vendors.publicValues(system[1], true)
+      const values = await vendors.publicValues(system[1], true)
       if (system[1] === undefined) { json(res, 200, values); return }
       if (!(system[1] in values)) { json(res, 404, { error: 'not_found' }); return }
       json(res, 200, { key: system[1], value: values[system[1]] })
@@ -547,8 +549,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     }
     switch (route) {
       case `POST ${PREFIX}auth/logout`:
-        store.revokeCredential(credential.id)
-        audit(req, member.name, 'logout', credential.id)
+        await store.revokeCredential(credential.id)
+        await audit(req, member.name, 'logout', credential.id)
         res.writeHead(204, auth.via === 'browser'
           ? { ...SECURITY_HEADERS, 'set-cookie': `${sessionCookie}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}` }
           : SECURITY_HEADERS)
@@ -557,13 +559,13 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       case `GET ${PREFIX}config`:
         // What a Host applies: device tokens only (it names the device token as the model key).
         if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
-        json(res, 200, managedConfig(member))
+        json(res, 200, await managedConfig(member))
         return
       // The company plugins GL Work lists for members to install by hand.
       case `GET ${PREFIX}plugins`:
         if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
         json(res, 200, {
-          plugins: catalog.published().map(p => ({
+          plugins: (await catalog.published()).map(p => ({
             name: p.name, displayName: p.displayName, description: p.description, version: p.version, url: p.url,
             integrity: p.integrity, size: p.size, permissions: p.permissions, preinstalled: p.preinstalled,
           })),
@@ -574,21 +576,21 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
         if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
         const body = await readJson(req)
         if (body === undefined) { json(res, 400, { error: 'invalid_request' }); return }
-        json(res, 200, { recorded: catalog.report(credential.id, body.plugins) })
+        json(res, 200, { recorded: await catalog.report(credential.id, body.plugins) })
         return
       }
       // The member's tunnels, for GL Work's tunnel plugin (which runs frpc).
       case `GET ${PREFIX}tunnels`:
         if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
-        json(res, 200, tunnels.forMember(member, credential.id))
+        json(res, 200, await tunnels.forMember(member, credential.id))
         return
       case `POST ${PREFIX}tunnels`: {
         if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
         const body = await readJson(req)
         if (body === undefined) { json(res, 400, { error: 'invalid_request' }); return }
-        await refusing(res, () => {
-          const tunnel = tunnels.create(member, credential, body)
-          audit(req, member.name, 'tunnel-create', tunnel.id, `${tunnel.type} ${tunnel.name}`)
+        await refusing(res, async () => {
+          const tunnel = await tunnels.create(member, credential, body)
+          await audit(req, member.name, 'tunnel-create', tunnel.id, `${tunnel.type} ${tunnel.name}`)
           json(res, 201, tunnel)
         })
         return
@@ -605,9 +607,9 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
           if (auth.via !== 'device') { json(res, 403, { error: 'device_only' }); return }
           const id = tunnel[1] as string
           if (req.method === 'DELETE') {
-            await refusing(res, () => {
-              const deleted = tunnels.delete(id, member)
-              audit(req, member.name, 'tunnel-delete', id, `${deleted.type} ${deleted.name}`)
+            await refusing(res, async () => {
+              const deleted = await tunnels.delete(id, member)
+              await audit(req, member.name, 'tunnel-delete', id, `${deleted.type} ${deleted.name}`)
               res.writeHead(204, SECURITY_HEADERS)
               res.end()
             })
@@ -615,7 +617,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
           }
           const body = await readJson(req)
           if (body === undefined) { json(res, 400, { error: 'invalid_request' }); return }
-          await refusing(res, () => { json(res, 200, tunnels.update(member, id, body)) })
+          await refusing(res, async () => { json(res, 200, await tunnels.update(member, id, body)) })
           return
         }
         json(res, 404, { error: 'not_found' })
@@ -627,8 +629,8 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
   async function phoneRoute(req: IncomingMessage, res: ServerResponse, url: URL, route: string, { member, credential }: Principal): Promise<void> {
     switch (route) {
       case `POST ${PREFIX}auth/logout`:
-        store.revokeCredential(credential.id)
-        audit(req, member.name, 'logout', credential.id)
+        await store.revokeCredential(credential.id)
+        await audit(req, member.name, 'logout', credential.id)
         res.writeHead(204, SECURITY_HEADERS)
         res.end()
         return
@@ -639,11 +641,11 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
         })
         return
       case `GET ${PREFIX}remote/hosts`:
-        json(res, 200, { hosts: tunnels.remotes(member) })
+        json(res, 200, { hosts: await tunnels.remotes(member) })
         return
       // 语音: what the phone may use, and a short-lived vendor token to use it with.
       case `GET ${PREFIX}phone/voice`:
-        json(res, 200, voice.forMember(member.name))
+        json(res, 200, await voice.forMember(member.name))
         return
       case `POST ${PREFIX}phone/voice/token`: {
         const body = await readJson(req)
@@ -666,13 +668,13 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     if (vhost === null) { json(res, 503, { error: '公司服务没有配置手机远程' }); return }
     let host: string
     try {
-      ({ host } = tunnels.remoteTarget(member, id))
+      ({ host } = await tunnels.remoteTarget(member, id))
     } catch (error) {
       if (!Refusal.is(error)) throw error
       json(res, error.status, { error: error.message })
       return
     }
-    if (method === 'session.prompt' || method === 'respond') audit(req, member.name, `remote-${method === 'respond' ? 'respond' : 'prompt'}`, id, credential.label)
+    if (method === 'session.prompt' || method === 'respond') await audit(req, member.name, `remote-${method === 'respond' ? 'respond' : 'prompt'}`, id, credential.label)
     await relayRequest(req, res, { vhost, host }, method, SECURITY_HEADERS)
   }
 
@@ -686,33 +688,44 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       refuseUpgrade(socket, 404, 'not_found')
       return true
     }
+    // The path is the service's: the rest is checked against the database, then relayed or refused.
+    connectRemote(req, socket, head, remote[1] as string).catch((error: unknown) => {
+      console.error('gateway: remote upgrade failed', error)
+      refuseUpgrade(socket, 500, 'internal')
+    })
+    return true
+  }
+
+  async function connectRemote(req: IncomingMessage, socket: Duplex, head: Buffer, id: string): Promise<void> {
+    await ready
     const authorization = req.headers.authorization ?? ''
     const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : ''
-    const principal = store.authenticate(token, 'phone', clientIp(req))
-    if (principal === undefined) { refuseUpgrade(socket, 401, 'unauthenticated'); return true }
+    const principal = await store.authenticate(token, 'phone', clientIp(req))
+    if (principal === undefined) { refuseUpgrade(socket, 401, 'unauthenticated'); return }
     const vhost = config.frps?.vhost ?? null
-    if (vhost === null) { refuseUpgrade(socket, 503, '公司服务没有配置手机远程'); return true }
-    const id = remote[1] as string
+    if (vhost === null) { refuseUpgrade(socket, 503, '公司服务没有配置手机远程'); return }
     let host: string
     try {
-      ({ host } = tunnels.remoteTarget(principal.member, id))
+      ({ host } = await tunnels.remoteTarget(principal.member, id))
     } catch (error) {
       if (!Refusal.is(error)) throw error
       refuseUpgrade(socket, error.status, error.message)
-      return true
+      return
     }
-    audit(req, principal.member.name, 'remote-connect', id, principal.credential.label)
+    await audit(req, principal.member.name, 'remote-connect', id, principal.credential.label)
+    if (socket.destroyed) return
     const close = relayUpgrade(req, socket, head, { vhost, host })
     // A phone signed out or revoked, or 手机远程 closed, ends the stream within a minute.
     const recheck = setInterval(() => {
-      const still = store.authenticate(token, 'phone')
-      let allowed = still !== undefined
-      if (still !== undefined) try { tunnels.remoteTarget(still.member, id) } catch { allowed = false }
-      if (!allowed) close()
+      void (async () => {
+        const still = await store.authenticate(token, 'phone')
+        let allowed = still !== undefined
+        if (still !== undefined) try { await tunnels.remoteTarget(still.member, id) } catch { allowed = false }
+        if (!allowed) close()
+      })().catch((error: unknown) => { console.error('gateway: remote recheck failed', error) })
     }, REMOTE_RECHECK_MS)
     recheck.unref()
     socket.on('close', () => { clearInterval(recheck) })
-    return true
   }
 
   /** Answer a refusal as { error } with its status. */
@@ -732,12 +745,13 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     const op = typeof body?.op === 'string' ? body.op : url.searchParams.get('op') ?? ''
     const content = body?.content
     if (typeof content !== 'object' || content === null) { json(res, 400, { error: 'invalid_request' }); return }
-    json(res, 200, tunnels.frp(op, content as Record<string, unknown>))
+    json(res, 200, await tunnels.frp(op, content as Record<string, unknown>))
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', config.publicOrigin)
-    if (url.pathname.startsWith(PREFIX)) { await ownRoute(req, res, url, authenticate(req)); return }
+    await ready
+    if (url.pathname.startsWith(PREFIX)) { await ownRoute(req, res, url, await authenticate(req)); return }
     // Standalone (no web console mounted in front): a landing page, nothing else.
     if (req.method === 'GET' && url.pathname === '/') {
       page(res, 200, '公司 AI 工作台服务', '请在桌面客户端中使用 GitHub 账号登录。')

@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
 import type { GatewayConfig } from '../src/config.ts'
-import { Store } from '../src/db.ts'
+import type { Store } from '../src/db.ts'
+import { memoryStore } from './memory.ts'
 import { createRuntime, type Runtime } from '../src/runtime.ts'
 
 const FRP = process.env.AGENT_WORK_FRP_DIR
@@ -77,7 +78,7 @@ const settle = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 describe('frp end to end', { skip: FRP === undefined ? 'set AGENT_WORK_FRP_DIR to a directory with frps and frpc' : false }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'agent-work-frp-'))
-  const store = new Store(':memory:')
+  const store = memoryStore()
   const children: ChildProcess[] = []
   let rt: Runtime
   let gateway: Server
@@ -94,20 +95,20 @@ describe('frp end to end', { skip: FRP === undefined ? 'set AGENT_WORK_FRP_DIR t
       .then((p) => { children.push(p.child); return p })
 
   before(async () => {
-    store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin', tunnels: true, ssh: true })
-    store.addMember({ name: 'bob', githubId: 2, githubLogin: 'bob', role: 'member', tunnels: true, ssh: true })
-    store.addMember({ name: 'carol', githubId: 3, githubLogin: 'carol', role: 'member', tunnels: true, ssh: true })
-    for (const name of ['alice', 'bob', 'carol']) token[name] = store.issueCredential(name, 'device', name, 86_400_000).token
+    await store.addMember({ name: 'alice', githubId: 1, githubLogin: 'alice', role: 'admin', tunnels: true, ssh: true })
+    await store.addMember({ name: 'bob', githubId: 2, githubLogin: 'bob', role: 'member', tunnels: true, ssh: true })
+    await store.addMember({ name: 'carol', githubId: 3, githubLogin: 'carol', role: 'member', tunnels: true, ssh: true })
+    for (const name of ['alice', 'bob', 'carol']) token[name] = (await store.issueCredential(name, 'device', name, 86_400_000)).token
     bindPort = await freePort()
     vhostPort = await freePort()
     const config: GatewayConfig = {
-      publicOrigin: 'https://agent.example.com', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false, databasePath: ':memory:',
+      publicOrigin: 'https://agent.example.com', listenHost: '127.0.0.1', listenPort: 0, trustProxy: false,
       github: { clientId: 'x', clientSecret: 'x', org: '', webUrl: 'http://127.0.0.1:9', apiUrl: 'http://127.0.0.1:9' },
       frps: { addr: '127.0.0.1', port: bindPort, protocol: 'tcp', pluginSecret: SECRET, publicIp: null, vhost: { host: '127.0.0.1', port: vhostPort } },
     }
-    rt = createRuntime(config, { store })
-    rt.tunnels.addDomain({ name: 't.test' })
-    rt.tunnels.markDomain('t.test', 'ok', 'ok')
+    rt = await createRuntime(config, { store })
+    await rt.tunnels.addDomain({ name: 't.test' })
+    await rt.tunnels.markDomain('t.test', 'ok', 'ok')
     gateway = createServer((req, res) => { void rt.gateway(req, res) })
     gateway.on('upgrade', (req, socket, head) => { if (!rt.upgrade(req, socket, head)) socket.destroy() })
     const gatewayPort = await listen(gateway)
@@ -120,7 +121,7 @@ describe('frp end to end', { skip: FRP === undefined ? 'set AGENT_WORK_FRP_DIR t
     children.push(frps.child)
   })
 
-  after(() => {
+  after(async () => {
     for (const child of children) child.kill()
     gateway.close(); web.close(); sshd.close()
   })
@@ -131,42 +132,42 @@ describe('frp end to end', { skip: FRP === undefined ? 'set AGENT_WORK_FRP_DIR t
   })
 
   it('serves a registered web tunnel behind its password, and refuses an unregistered host', async () => {
-    const t = rt.tunnels.create(store.member('alice')!, store.listCredentials('alice')[0]!, { type: 'http', name: 'web', localPort: webPort })
+    const t = await rt.tunnels.create((await store.member('alice'))!, (await store.listCredentials('alice'))[0]!, { type: 'http', name: 'web', localPort: webPort })
     const client = await frpc('alice', 'alice', `[[proxies]]\nname = "${t.id}"\ntype = "http"\nlocalPort = ${String(webPort)}\ncustomDomains = ["web-alice.t.test"]\nhttpUser = "guest"\nhttpPassword = "pw"\n`)
     assert.equal((await get(vhostPort, 'web-alice.t.test', 'guest:pw')).body, 'hello from alice')
     assert.equal((await get(vhostPort, 'web-alice.t.test')).status, 401)
-    assert.equal(rt.tunnels.get(t.id)?.online, true)
+    assert.equal((await rt.tunnels.get(t.id))?.online, true)
     // The same tunnel id claiming another host: frps refuses the proxy.
     const forged = await frpc('alice', 'alice', `[[proxies]]\nname = "${t.id}x"\ntype = "http"\nlocalPort = ${String(webPort)}\ncustomDomains = ["admin.t.test"]\n`, /start error|start proxy success/u)
     assert.match(forged.log(), /公司服务里没有这条隧道|reject/u)
     assert.equal((await get(vhostPort, 'admin.t.test')).status, 404)
     // Heartbeats reach the service.
-    const seen = rt.tunnels.get(t.id)?.lastSeenAt ?? 0
+    const seen = (await rt.tunnels.get(t.id))?.lastSeenAt ?? 0
     await settle(2500)
-    assert.ok((rt.tunnels.get(t.id)?.lastSeenAt ?? 0) > seen, 'Ping updates last seen')
+    assert.ok(((await rt.tunnels.get(t.id))?.lastSeenAt ?? 0) > seen, 'Ping updates last seen')
     // Closed by an administrator: frps drops the client on its next heartbeat, frpc logs in again, and the tunnel is refused.
-    rt.tunnels.setClosed(t.id, 'alice')
+    await rt.tunnels.setClosed(t.id, 'alice')
     await settle(3000)
-    assert.equal(rt.tunnels.get(t.id)?.online, false, 'frps reported CloseProxy')
+    assert.equal((await rt.tunnels.get(t.id))?.online, false, 'frps reported CloseProxy')
     assert.equal((await get(vhostPort, 'web-alice.t.test', 'guest:pw')).status, 404)
     assert.ok(client.log().split('login to server success').length > 2, 'frpc logged in again')
     assert.match(client.log(), /已被关闭|管理员已关闭这条隧道/u)
     // A revoked device cannot come back at all.
-    rt.tunnels.setClosed(t.id, null)
-    store.revokeCredential(store.listCredentials('alice')[0]!.id)
+    await rt.tunnels.setClosed(t.id, null)
+    await store.revokeCredential((await store.listCredentials('alice'))[0]!.id)
     await settle(3000)
     assert.equal((await get(vhostPort, 'web-alice.t.test', 'guest:pw')).status, 404)
   })
 
   it('connects SSH only for the members it allows', async () => {
-    token.alice2 = store.issueCredential('alice', 'device', 'alice2', 86_400_000).token
-    const device = store.listCredentials('alice').find(c => c.label === 'alice2')!
-    const t = rt.tunnels.create(store.member('alice')!, device, { type: 'ssh', name: 'box', localPort: sshPort, sshAccess: ['bob'] })
-    const own = rt.tunnels.forMember(store.member('alice')!).tunnels.find(x => x.id === t.id)!
+    token.alice2 = (await store.issueCredential('alice', 'device', 'alice2', 86_400_000)).token
+    const device = (await store.listCredentials('alice')).find(c => c.label === 'alice2')!
+    const t = await rt.tunnels.create((await store.member('alice'))!, device, { type: 'ssh', name: 'box', localPort: sshPort, sshAccess: ['bob'] })
+    const own = (await rt.tunnels.forMember((await store.member('alice'))!)).tunnels.find(x => x.id === t.id)!
     await frpc('alice', 'alice2', `[[proxies]]\nname = "${t.id}"\ntype = "stcp"\nlocalPort = ${String(sshPort)}\nsecretKey = "${own.secretKey as string}"\nallowUsers = ["bob"]\n`)
     const visitor = async (who: string) => {
       const port = await freePort()
-      const key = rt.tunnels.forMember(store.member(who)!).shared.find(s => s.id === t.id)?.secretKey ?? own.secretKey
+      const key = (await rt.tunnels.forMember((await store.member(who))!)).shared.find(s => s.id === t.id)?.secretKey ?? own.secretKey
       await frpc(who, who, `[[visitors]]\nname = "ssh-${who}"\ntype = "stcp"\nserverUser = "alice"\nserverName = "${t.id}"\nsecretKey = "${key as string}"\nbindAddr = "127.0.0.1"\nbindPort = ${String(port)}\n`)
       return port
     }
@@ -175,10 +176,10 @@ describe('frp end to end', { skip: FRP === undefined ? 'set AGENT_WORK_FRP_DIR t
   })
 
   it('relays a signed-in phone to its Mac through frps, which frpc reaches with the Mac\'s secret', async () => {
-    token.alice3 = store.issueCredential('alice', 'device', 'alice3', 86_400_000).token
-    const device = store.listCredentials('alice').find(c => c.label === 'alice3')!
-    const phone = store.issueCredential('alice', 'phone', 'iPhone', 86_400_000).token
-    const t = rt.tunnels.create(store.member('alice')!, device, { type: 'remote' })
+    token.alice3 = (await store.issueCredential('alice', 'device', 'alice3', 86_400_000)).token
+    const device = (await store.listCredentials('alice')).find(c => c.label === 'alice3')!
+    const phone = (await store.issueCredential('alice', 'phone', 'iPhone', 86_400_000)).token
+    const t = await rt.tunnels.create((await store.member('alice'))!, device, { type: 'remote' })
     // The Mac's remote server (remote.js in GL Work): only what carries frpc's header.
     const seen: string[] = []
     const mac = createServer((req, res) => {

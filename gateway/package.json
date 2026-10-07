@@ -17,7 +17,9 @@
     "admin:local": "AGENT_WORK_ENV_FILE=.env node src/cli.ts"
   },
   "devDependencies": {
+    "@electric-sql/pglite-socket": "^0.2.11",
     "@types/node": "^24.19.0",
+    "@types/pg": "^8.23.1",
     "typescript": "^7.0.2"
   },
   "exports": {
@@ -29,5 +31,9 @@
     "./errors": "./src/errors.ts",
     "./vendors": "./src/vendors.ts",
     "./server": "./src/server.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "pg": "^8.23.1"
   }
 }

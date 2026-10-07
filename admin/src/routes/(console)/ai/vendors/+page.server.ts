@@ -1,10 +1,10 @@
 import { act, actor, getRuntime, requireAdmin, text } from '#lib/server/context.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = (event) => {
+export const load: PageServerLoad = async (event) => {
 	requireAdmin(event);
 	const { admin } = getRuntime();
-	return { vendors: admin.vendorList(), subscriptions: admin.subscriptions() };
+	return { vendors: await admin.vendorList(), subscriptions: await admin.subscriptions() };
 };
 
 function vendorInput(form: FormData) {
@@ -18,15 +18,15 @@ function vendorInput(form: FormData) {
 export const actions: Actions = {
 	add: async (event) => {
 		const form = await event.request.formData();
-		return act(() => ({ vendor: getRuntime().admin.addVendor(actor(event), vendorInput(form)).name }));
+		return act(async () => ({ vendor: (await getRuntime().admin.addVendor(actor(event), vendorInput(form))).name }));
 	},
 	update: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.updateVendor(actor(event), text(form, 'id'), vendorInput(form)); return {}; });
+		return act(async () => { await getRuntime().admin.updateVendor(actor(event), text(form, 'id'), vendorInput(form)); return {}; });
 	},
 	delete: async (event) => {
 		const form = await event.request.formData();
-		return act(() => { getRuntime().admin.deleteVendor(actor(event), text(form, 'id')); return {}; });
+		return act(async () => { await getRuntime().admin.deleteVendor(actor(event), text(form, 'id')); return {}; });
 	},
 	catalog: async (event) => {
 		const form = await event.request.formData();
@@ -36,6 +36,6 @@ export const actions: Actions = {
 		const form = await event.request.formData();
 		let models: unknown;
 		try { models = JSON.parse(text(form, 'models')); } catch { models = null; }
-		return act(() => ({ count: getRuntime().admin.setModels(actor(event), text(form, 'id'), models).models.length }));
+		return act(async () => ({ count: (await getRuntime().admin.setModels(actor(event), text(form, 'id'), models)).models.length }));
 	}
 };

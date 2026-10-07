@@ -6,10 +6,10 @@
  * sha512 is recorded so the desktop can check what it downloads.
  */
 import { createHash } from 'node:crypto'
-import type { DatabaseSync } from 'node:sqlite'
 import { gunzipSync, gzipSync } from 'node:zlib'
 import { Refusal } from './errors.ts'
 import type { Store } from './db.ts'
+import type { Sql } from './sql.ts'
 
 /** Plugins carry their frpc-sized binaries; anything far larger is a mistake. */
 const MAX_PACKAGE_BYTES = 200 * 1024 * 1024
@@ -171,89 +171,84 @@ export async function fetchPackage(url: string, fetchImpl: typeof fetch = fetch)
 }
 
 export class PluginCatalog {
-  private readonly db: DatabaseSync
+  private readonly db: Sql
   private readonly now: () => number
 
   constructor(store: Store, now: () => number = Date.now) {
-    this.db = store.db
+    this.db = store.sql
     this.now = now
   }
 
-  list(): Plugin[] {
-    return (this.db.prepare('select * from plugins order by preinstalled desc, display_name').all() as unknown as PluginRow[]).map(toPlugin)
+  async list(): Promise<Plugin[]> {
+    return (await this.db.query<PluginRow>('select * from plugins order by preinstalled desc, display_name, seq')).map(toPlugin)
   }
 
-  get(name: string): Plugin | undefined {
-    const row = this.db.prepare('select * from plugins where name = ?').get(name) as PluginRow | undefined
+  async get(name: string): Promise<Plugin | undefined> {
+    const row = await this.db.one<PluginRow>('select * from plugins where name = ?', [name])
     return row === undefined ? undefined : toPlugin(row)
   }
 
   /** What GL Work lists: published plugins only. */
-  published(): Plugin[] {
-    return this.list().filter(p => p.status === 'published')
+  async published(): Promise<Plugin[]> {
+    return (await this.list()).filter(p => p.status === 'published')
   }
 
   /**
    * Register a package, or a new version of a registered one.
    * @param expect - when given, the package must be this plugin (updating it).
    */
-  save(pkg: PluginPackage, url: string, meta: { displayName: string; permissions: string[]; preinstalled: boolean; status?: 'published' | 'hidden' }, expect?: string): Plugin {
+  async save(pkg: PluginPackage, url: string, meta: { displayName: string; permissions: string[]; preinstalled: boolean; status?: 'published' | 'hidden' }, expect?: string): Promise<Plugin> {
     if (expect !== undefined && expect !== pkg.name) throw new Refusal(409, `新的插件包是 ${pkg.name}，不是 ${expect}`)
     const now = this.now()
-    this.db.prepare(`insert into plugins (name, display_name, description, version, url, integrity, size, permissions, status, preinstalled, created_at, updated_at)
+    await this.db.run(`insert into plugins (name, display_name, description, version, url, integrity, size, permissions, status, preinstalled, created_at, updated_at)
       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict (name) do update set display_name = excluded.display_name, description = excluded.description, version = excluded.version,
         url = excluded.url, integrity = excluded.integrity, size = excluded.size, permissions = excluded.permissions,
-        status = coalesce(?, plugins.status), preinstalled = excluded.preinstalled, updated_at = excluded.updated_at`)
-      .run(pkg.name, meta.displayName, pkg.description, pkg.version, url, pkg.integrity, pkg.size, JSON.stringify(meta.permissions), meta.status ?? 'hidden',
-        meta.preinstalled ? 1 : 0, now, now, meta.status ?? null)
-    return this.get(pkg.name) as Plugin
+        status = coalesce(?::text, plugins.status), preinstalled = excluded.preinstalled, updated_at = excluded.updated_at`,
+    [pkg.name, meta.displayName, pkg.description, pkg.version, url, pkg.integrity, pkg.size, JSON.stringify(meta.permissions), meta.status ?? 'hidden',
+      meta.preinstalled ? 1 : 0, now, now, meta.status ?? null])
+    return await this.get(pkg.name) as Plugin
   }
 
   /** Edit what members read about a plugin, without a new package. */
-  describe(name: string, meta: { displayName: string; permissions: string[]; preinstalled: boolean }): Plugin {
-    if (Number(this.db.prepare('update plugins set display_name = ?, permissions = ?, preinstalled = ?, updated_at = ? where name = ?')
-      .run(meta.displayName, JSON.stringify(meta.permissions), meta.preinstalled ? 1 : 0, this.now(), name).changes) === 0) throw new Refusal(404, `没有插件 ${name}`)
-    return this.get(name) as Plugin
+  async describe(name: string, meta: { displayName: string; permissions: string[]; preinstalled: boolean }): Promise<Plugin> {
+    if (await this.db.run('update plugins set display_name = ?, permissions = ?, preinstalled = ?, updated_at = ? where name = ?',
+      [meta.displayName, JSON.stringify(meta.permissions), meta.preinstalled ? 1 : 0, this.now(), name]) === 0) throw new Refusal(404, `没有插件 ${name}`)
+    return await this.get(name) as Plugin
   }
 
-  setStatus(name: string, status: unknown): Plugin {
+  async setStatus(name: string, status: unknown): Promise<Plugin> {
     if (status !== 'published' && status !== 'hidden') throw new Refusal(400, '状态只能是上架或下架')
-    if (Number(this.db.prepare('update plugins set status = ?, updated_at = ? where name = ?').run(status, this.now(), name).changes) === 0) throw new Refusal(404, `没有插件 ${name}`)
-    return this.get(name) as Plugin
+    if (await this.db.run('update plugins set status = ?, updated_at = ? where name = ?', [status, this.now(), name]) === 0) throw new Refusal(404, `没有插件 ${name}`)
+    return await this.get(name) as Plugin
   }
 
-  delete(name: string): Plugin {
-    const plugin = this.get(name)
+  async delete(name: string): Promise<Plugin> {
+    const plugin = await this.get(name)
     if (plugin === undefined) throw new Refusal(404, `没有插件 ${name}`)
-    this.db.prepare('delete from plugins where name = ?').run(name)
+    await this.db.run('delete from plugins where name = ?', [name])
     return plugin
   }
 
   /** A desktop's report of the catalog plugins it has installed; the rest of its list is not kept. */
-  report(credential: string, installed: unknown): number {
-    const known = new Set(this.list().map(p => p.name))
+  async report(credential: string, installed: unknown): Promise<number> {
+    const known = new Set((await this.list()).map(p => p.name))
     const entries = (Array.isArray(installed) ? installed : []).flatMap((entry: unknown) => {
       const { name, version } = (typeof entry === 'object' && entry !== null ? entry : {}) as { name?: unknown; version?: unknown }
       return typeof name === 'string' && known.has(name) && typeof version === 'string' && version.length <= 64 ? [{ name, version }] : []
     })
-    this.db.exec('begin')
-    try {
-      this.db.prepare('delete from device_plugins where credential = ?').run(credential)
-      const insert = this.db.prepare('insert into device_plugins (credential, plugin, version, reported_at) values (?, ?, ?, ?)')
-      for (const { name, version } of entries) insert.run(credential, name, version, this.now())
-      this.db.exec('commit')
-    } catch (error) {
-      this.db.exec('rollback')
-      throw error
-    }
+    await this.db.transaction(async (tx) => {
+      await tx.run('delete from device_plugins where credential = ?', [credential])
+      for (const { name, version } of entries) {
+        await tx.run('insert into device_plugins (credential, plugin, version, reported_at) values (?, ?, ?, ?)', [credential, name, version, this.now()])
+      }
+    })
     return entries.length
   }
 
   /** Installed catalog plugins per live desktop device. */
-  installs(): { credential: string; plugin: string; version: string; reportedAt: number }[] {
-    const rows = this.db.prepare(`select d.credential, d.plugin, d.version, d.reported_at as reportedAt from device_plugins d
-      join credentials c on c.id = d.credential where c.revoked_at is null and c.kind = 'device'`).all() as unknown as { credential: string; plugin: string; version: string; reportedAt: number }[]
-    return rows.map(row => ({ ...row }))
+  async installs(): Promise<{ credential: string; plugin: string; version: string; reportedAt: number }[]> {
+    return this.db.query(`select d.credential, d.plugin, d.version, d.reported_at as "reportedAt" from device_plugins d
+      join credentials c on c.id = d.credential where c.revoked_at is null and c.kind = 'device'`)
   }
 }

@@ -1,14 +1,14 @@
 import { act, actor, getRuntime, requireAdmin, text } from '#lib/server/context.js';
 import type { Actions, PageServerLoad } from './$types';
 
-export const load: PageServerLoad = (event) => {
+export const load: PageServerLoad = async (event) => {
 	requireAdmin(event);
 	const { admin } = getRuntime();
 	return {
-		members: admin.members(),
-		vendors: admin.vendorList().map((v) => ({ id: v.id, name: v.name, auth: v.auth })),
-		keys: admin.keys().map((k) => ({ id: k.id, label: k.label, last4: k.last4 })),
-		accounts: admin.accounts().map((a) => ({ id: a.id, account: a.account }))
+		members: await admin.members(),
+		vendors: (await admin.vendorList()).map((v) => ({ id: v.id, name: v.name, auth: v.auth })),
+		keys: (await admin.keys()).map((k) => ({ id: k.id, label: k.label, last4: k.last4 })),
+		accounts: (await admin.accounts()).map((a) => ({ id: a.id, account: a.account }))
 	};
 };
 
