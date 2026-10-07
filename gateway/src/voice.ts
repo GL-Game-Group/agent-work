@@ -182,10 +182,53 @@ export function parseVolcengineVoices(body: string): ParsedVoice[] {
   return [...voices.values()]
 }
 
+/** A voice's sample: the vendor's own recording, or a sentence synthesized with a company key. */
+export interface VoiceSample {
+  contentType: string
+  body: Uint8Array
+}
+
+const SAMPLE_CACHE_LIMIT = 300
+const MAX_SAMPLE_BYTES = 5 * 1024 * 1024
+
+/**
+ * One Volcengine V3 synthesis (HTTP chunked): a JSON object per chunk, audio as base64 in `data`,
+ * code 20000000 at the end. @returns the MP3 bytes.
+ */
+export async function volcengineSynthesize(
+  fetchImpl: typeof fetch, base: string, credential: { appId: string; token: string }, model: string, speaker: string, text: string,
+): Promise<Uint8Array> {
+  const response = await fetchImpl(`${base}/api/v3/tts/unidirectional`, {
+    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+    headers: {
+      'content-type': 'application/json', 'x-api-app-id': credential.appId, 'x-api-access-key': credential.token,
+      'x-api-resource-id': model, 'x-api-request-id': crypto.randomUUID(),
+    },
+    body: JSON.stringify({ user: { uid: 'glwork-console' }, req_params: { text, speaker, audio_params: { format: 'mp3', sample_rate: 24000 } } }),
+  })
+  const raw = await response.text()
+  const chunks: Buffer[] = []
+  let failure: string | undefined
+  // Chunks are JSON objects one after another (usually one per line).
+  for (const part of raw.split(/\r?\n|(?<=\})(?=\{)/u)) {
+    const line = part.trim()
+    if (line === '') continue
+    let item: { code?: unknown; message?: unknown; data?: unknown }
+    try { item = JSON.parse(line) as typeof item } catch { continue }
+    if (typeof item.data === 'string' && item.data !== '') chunks.push(Buffer.from(item.data, 'base64'))
+    if (item.code !== 0 && item.code !== 20000000 && item.code !== undefined) failure = `${String(item.code)} ${String(item.message ?? '')}`.trim()
+  }
+  if (!response.ok || failure !== undefined || chunks.length === 0) {
+    throw new Refusal(502, `火山语音合成失败（${failure ?? String(response.status)}），请检查 Key 是否开通了 ${model}`)
+  }
+  return Buffer.concat(chunks)
+}
+
 export class Voice {
   private readonly db: Sql
   private readonly vendors: Vendors
   private readonly now: () => number
+  private readonly samples = new Map<string, VoiceSample>()
 
   constructor(store: Store, vendors: Vendors, now: () => number = Date.now) {
     this.db = store.sql
@@ -349,6 +392,46 @@ export class Voice {
    * Refused when the vendor is switched off, the member has no key for it, or
    * the hour's trades are used up.
    */
+  /**
+   * A voice's sample for the console: the vendor's own recording when its list has one
+   * (fetched here, so the console plays it from its own origin), otherwise one sentence
+   * synthesized with one of the vendor's active keys. Kept in memory once made.
+   */
+  async sample(vendorId: string, voiceId: string, fetchImpl: typeof fetch = fetch): Promise<VoiceSample> {
+    const key = `${vendorId}/${voiceId}`
+    const cached = this.samples.get(key)
+    if (cached !== undefined) return cached
+    const vendor = await this.voiceVendor(vendorId)
+    const voice = (await this.catalog(vendor.id)).find(v => v.id === voiceId)
+    if (voice === undefined) throw new Refusal(404, `${vendor.name} 没有音色 ${voiceId}`)
+    let sample: VoiceSample
+    try {
+      if (voice.sampleUrl !== null) {
+        const response = await fetchImpl(voice.sampleUrl, { redirect: 'follow', signal: AbortSignal.timeout(20_000) })
+        if (!response.ok) throw new Refusal(502, `官方试听音频返回 ${String(response.status)}`)
+        const body = new Uint8Array(await response.arrayBuffer())
+        if (body.byteLength > MAX_SAMPLE_BYTES) throw new Refusal(502, '官方试听音频太大')
+        sample = { contentType: response.headers.get('content-type')?.startsWith('audio/') === true ? response.headers.get('content-type') as string : 'audio/wav', body }
+      } else if (vendor.protocol === 'volcengine') {
+        const keyId = (await this.vendors.listKeys(vendor.id)).find(k => k.status === 'active')?.id
+        if (keyId === undefined) throw new Refusal(409, `先在“API Key”里给 ${vendor.name} 录入一个 Key，才能现场合成试听`)
+        const credential = volcengineCredential(await this.vendors.keySecret(keyId))
+        if (credential === undefined) throw new Refusal(502, `${vendor.name} 的 Key 格式不对，请重新录入`)
+        const model = voice.models[0] ?? (await this.settings()).vendors[vendor.id]?.ttsModel ?? 'seed-tts-2.0'
+        const body = await volcengineSynthesize(fetchImpl, vendor.baseUrl ?? '', credential, model, voice.id, `你好，我是${voice.name}，很高兴为你朗读 Agent 的回复。`)
+        sample = { contentType: 'audio/mpeg', body }
+      } else {
+        throw new Refusal(404, `${voice.name} 没有官方试听`)
+      }
+    } catch (error) {
+      if (Refusal.is(error)) throw error
+      throw new Refusal(502, `无法获取 ${voice.name} 的试听`)
+    }
+    if (this.samples.size >= SAMPLE_CACHE_LIMIT) this.samples.delete(this.samples.keys().next().value as string)
+    this.samples.set(key, sample)
+    return sample
+  }
+
   async issueToken(member: string, vendorId: unknown, fetchImpl: typeof fetch = fetch): Promise<VoiceToken> {
     const vendor = await this.voiceVendor(typeof vendorId === 'string' ? vendorId : '')
     const settings = await this.settings()

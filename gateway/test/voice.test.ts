@@ -108,6 +108,14 @@ describe('语音 for phones', () => {
       return Response.json({ token: 'st-temporary', expires_at: 2_000_000_000 })
     }
     if (url === 'https://openspeech.bytedance.com/api/v1/sts/token') return Response.json({ jwt_token: 'jwt-temporary' })
+    if (url.startsWith('https://help-static-aliyun-doc.aliyuncs.com/')) return new Response(new Uint8Array([82, 73, 70, 70]), { headers: { 'content-type': 'audio/x-wav' } })
+    if (url === 'https://openspeech.bytedance.com/api/v3/tts/unidirectional') {
+      const body = JSON.parse(String(init?.body)) as { req_params: { speaker: string } }
+      if (body.req_params.speaker === 'zh_male_m191_uranus_bigtts') return Response.json({ code: 45000000, message: 'speaker not granted' }, { status: 400 })
+      // Two audio chunks, then the end, as Volcengine streams them.
+      return new Response([{ code: 0, message: '', data: Buffer.from('ID3').toString('base64') }, { code: 0, message: '', data: Buffer.from('mp3').toString('base64') }, { code: 20000000, message: 'ok', data: null }]
+        .map(c => JSON.stringify(c)).join('\n'))
+    }
     return new Response('not found', { status: 404 })
   }
   const phone: Record<string, string> = {}
@@ -168,6 +176,23 @@ describe('语音 for phones', () => {
     assert.equal((await rt.admin.voice()).voices.filter(v => v.vendor === 'qwen-voice').length, 3)
     await rt.admin.refreshVoices(admin, 'volc-voice')
     assert.equal((await rt.admin.voice()).voices.filter(v => v.vendor === 'volc-voice').length, 3)
+  })
+
+  it('plays samples for the console: the official one, or a sentence synthesized with a company key', async () => {
+    const official = await rt.admin.voiceSample('qwen-voice', 'Cherry')
+    assert.deepEqual([official.contentType, [...official.body]], ['audio/x-wav', [82, 73, 70, 70]])
+    asked.length = 0
+    const synthesized = await rt.admin.voiceSample('volc-voice', 'zh_male_fanjuanqingnian_mars_bigtts')
+    assert.deepEqual([synthesized.contentType, Buffer.from(synthesized.body).toString()], ['audio/mpeg', 'ID3mp3'])
+    const call = asked.at(-1)
+    assert.equal(call?.url, 'https://openspeech.bytedance.com/api/v3/tts/unidirectional')
+    assert.match(call?.body ?? '', /"speaker":"zh_male_fanjuanqingnian_mars_bigtts"/u)
+    // Made once, then kept.
+    await rt.admin.voiceSample('volc-voice', 'zh_male_fanjuanqingnian_mars_bigtts')
+    assert.equal(asked.filter(a => a.url.includes('/api/v3/tts/')).length, 1)
+    await assert.rejects(rt.admin.voiceSample('volc-voice', 'zh_male_m191_uranus_bigtts'), /45000000 speaker not granted/u)
+    await assert.rejects(rt.admin.voiceSample('volc-voice', 'nobody'), /没有音色/u)
+    await assert.rejects(rt.admin.voiceSample('deepseek', 'Cherry'), /没有语音厂商/u)
   })
 
   it('validates the settings', async () => {

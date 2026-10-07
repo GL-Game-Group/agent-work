@@ -62,6 +62,8 @@ export default defineConfig({
 					'style-src': ['self', 'unsafe-inline'],
 					'img-src': ['self', 'data:', 'https://avatars.githubusercontent.com'],
 					'font-src': ['self'],
+					// 语音 › 试听 plays samples the console serves itself.
+					'media-src': ['self'],
 					'connect-src': ['self'],
 					'form-action': ['self'],
 					'base-uri': ['none'],

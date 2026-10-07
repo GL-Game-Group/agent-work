@@ -545,6 +545,11 @@ export class AdminService {
     return result
   }
 
+  /** A voice's sample for the console's 试听 (administrators only; previews are not audited). */
+  async voiceSample(vendor: string, voice: string) {
+    return this.voiceStore.sample(vendor, voice, this.fetch)
+  }
+
   async setEnabledVoices(actor: Actor, vendor: string, ids: unknown): Promise<number> {
     const count = await this.voiceStore.setEnabledVoices(vendor, ids)
     await this.audit(actor, 'voice-voices', vendor, `${String(count)} voices shown`)

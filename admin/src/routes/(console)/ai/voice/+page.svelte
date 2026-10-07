@@ -16,6 +16,8 @@
 	import Play from '@lucide/svelte/icons/play';
 	import Square from '@lucide/svelte/icons/square';
 	import Search from '@lucide/svelte/icons/search';
+	import Loader from '@lucide/svelte/icons/loader-circle';
+	import { toast } from 'svelte-sonner';
 	import { toastForm, toastResult } from '#lib/form.js';
 	import { relative } from '#lib/labels.js';
 
@@ -44,16 +46,30 @@
 		chosen[vendor] = on ? [...list, ...ids] : list;
 	}
 
-	// Samples: one plays at a time.
+	// Samples, from the console itself: one plays at a time.
 	let playing = $state<string | null>(null);
+	let loading = $state<string | null>(null);
 	let audio: HTMLAudioElement | null = null;
-	function play(v: VoiceRow) {
+	async function play(v: VoiceRow) {
 		audio?.pause();
-		if (playing === v.id || !v.sampleUrl) { playing = null; return; }
-		audio = new Audio(v.sampleUrl);
-		audio.onended = () => (playing = null);
-		void audio.play();
-		playing = v.id;
+		if (playing === v.id || loading === v.id) { playing = null; loading = null; return; }
+		const url = `/ai/voice/sample?vendor=${encodeURIComponent(v.vendor)}&voice=${encodeURIComponent(v.id)}`;
+		loading = v.id;
+		try {
+			const response = await fetch(url);
+			if (!response.ok) throw new Error((await response.json().catch(() => null))?.message ?? '试听失败');
+			const blob = await response.blob();
+			if (loading !== v.id) return;
+			audio = new Audio(URL.createObjectURL(blob));
+			audio.onended = () => (playing = null);
+			await audio.play();
+			playing = v.id;
+		} catch (cause) {
+			toast.error(cause instanceof Error ? cause.message : '试听失败');
+			playing = null;
+		} finally {
+			if (loading === v.id) loading = null;
+		}
 	}
 
 	let refreshing = $state<string | null>(null);
@@ -111,7 +127,7 @@
 <Card.Root class="mt-4">
 	<Card.Header>
 		<Card.Title>音色</Card.Title>
-		<Card.Description>从两家官方的音色列表读取。勾选的音色才会出现在成员手机上；千问有官方试听，火山没有，成员在手机上试听时现场合成一句。</Card.Description>
+		<Card.Description>从两家官方的音色列表读取。勾选的音色才会出现在成员手机上；千问播放官方试听；火山没有官方试听，用已录入的 Key 现场合成一句（合成过的会缓存）。</Card.Description>
 	</Card.Header>
 	<Card.Content>
 		<Tabs.Root bind:value={tab} onValueChange={() => { query = ''; family = 'all'; }}>
@@ -160,9 +176,9 @@
 											<Table.Cell class="text-muted-foreground max-w-64 text-xs whitespace-normal">{r.description ?? ''}{#if family === 'all' && r.family}<div class="opacity-70">{r.family}</div>{/if}</Table.Cell>
 											<Table.Cell class="text-muted-foreground max-w-48 truncate text-xs" title={r.languages ?? ''}>{r.languages ?? ''}</Table.Cell>
 											<Table.Cell>
-												{#if r.sampleUrl}
-													<Button variant="ghost" size="icon-sm" onclick={() => play(r)} aria-label="试听 {r.name}">{#if playing === r.id}<Square />{:else}<Play />{/if}</Button>
-												{:else}<span class="text-muted-foreground text-xs">—</span>{/if}
+												<Button variant="ghost" size="icon-sm" onclick={() => play(r)} aria-label="试听 {r.name}" title={r.sampleUrl ? '官方试听' : '用已录入的 Key 现场合成一句'}>
+													{#if loading === r.id}<Loader class="animate-spin" />{:else if playing === r.id}<Square />{:else}<Play />{/if}
+												</Button>
 											</Table.Cell>
 										</Table.Row>
 									{/each}
