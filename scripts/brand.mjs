@@ -155,3 +155,26 @@ for (const file of ['.env.macos', '.env.macos.example', '.env.windows.example'])
     console.warn(`agent-work: ${file} sets DSH_DESKTOP_PRODUCT_NAME="${name}", brand.json says "${brand.productName}"`)
   }
 }
+
+// GL Work on Orca (orca/, GL-Game-Group/gl-orca): the macOS app icon its packaging config
+// (orca/config/glwork-builder.config.cjs) uses, as PNG and, on macOS, as .icns.
+const ORCA_BRAND = join(ROOT, 'orca', 'resources', 'glwork')
+mkdirSync(ORCA_BRAND, { recursive: true })
+await sharp(Buffer.from(macos), { density: 300 }).resize(1024, 1024).png().toFile(join(ORCA_BRAND, 'icon.png'))
+console.log('agent-work: wrote orca/resources/glwork/icon.png')
+if (process.platform === 'darwin') {
+  const { execFileSync } = await import('node:child_process')
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const iconset = join(mkdtempSync(join(tmpdir(), 'glwork-icon-')), 'icon.iconset')
+  mkdirSync(iconset)
+  for (const size of [16, 32, 128, 256, 512]) {
+    for (const scale of [1, 2]) {
+      await sharp(Buffer.from(macos), { density: 300 }).resize(size * scale, size * scale).png()
+        .toFile(join(iconset, `icon_${size}x${size}${scale === 2 ? '@2x' : ''}.png`))
+    }
+  }
+  execFileSync('iconutil', ['-c', 'icns', iconset, '-o', join(ORCA_BRAND, 'icon.icns')])
+  rmSync(dirname(iconset), { recursive: true, force: true })
+  console.log('agent-work: wrote orca/resources/glwork/icon.icns')
+}

@@ -25,6 +25,14 @@
 
 上游 DeepSeek Harness 在 `upstream/`（submodule，只读）。修改补丁或编写 Host 插件之前，先读 [upstream/CLAUDE.md](upstream/CLAUDE.md) 和相关包的 README。
 
+### 重构：基于 Orca（2026-10-08 起）
+
+GL Work 改为在 [Orca](https://github.com/stablyai/orca)（MIT）上二次开发，需求见 [重构.md](重构.md)。上面基于 DeepSeek Harness 的部分（`upstream/`、`patches/`、`overlay/`、`plugins/`、`mobile/ios`）作为历史版本保留不动；公司服务和后台（`gateway/`、`admin/`）两套客户端共用。
+
+- `orca/`：子仓库，`GL-Game-Group/gl-orca` 的 `my/main`。对 Orca 的改动都在 gl-orca 里提交，按它的 [docs/fork/README.md](orca/docs/fork/README.md)：功能分支 `my/<功能>` 合入 `my/main`（merge，不 rebase），提交前缀 `eva:`，新代码放新文件、官方文件只加接入点，每项改动在 `docs/fork/changes/` 留记录，检查用 Orca 自己的（`pnpm tc`、`pnpm run check:code-quality:changed`、相关测试；它启动的应用要带 `ORCA_BACKGROUND_LAUNCH=1`）。agent-work 只提交子仓库指针。
+- 阶段：R0 品牌与打包（已完成：`com.glgwork.work`、数据目录 `glwork`、关闭 Orca 更新和云账号，`orca/docs/fork/changes/glwork-brand.md`）；R1 公司账号登录和“公司模型”；R2 Claude Code、Codex、Qoder 的检测、安装、登录、停用；R3 手机端（iOS，Orca 的 React Native 端）GitHub 登录、选在线电脑连接；R4 语音；R5 打包签名和发布。桌面第一版只做 macOS。
+- 构建：`cd orca && pnpm install && (cd mobile && pnpm install)`，然后 `node config/scripts/glwork-build-mac.mjs --dir`（本机试用的 `dist/mac-arm64/GL Work.app`）；开发版 `GLWORK_BUILD=1 ORCA_BACKGROUND_LAUNCH=1 pnpm dev`。图标仍由本仓库的 `pnpm brand` 生成（写到 `orca/resources/glwork/`）。
+
 ## 工作流程
 
 **先出方案，经人确认后再动手。** 这条规则来自项目设计，适用于以下情况：
