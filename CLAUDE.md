@@ -11,7 +11,7 @@
 | 3 | 桌面端补丁：0004 预装 team-bundle；0005 登录界面只保留公司登录；0006、0007 品牌；0008 预装插件的 `bin/` 放到 asar 外；0009 用户菜单的“公司文档”；0010 登录窗口的服务器设置；0011 工作区菜单的插件扩展点；打包 | `patches/`、`overlay/` | 已完成 |
 | 4 | 配置下发和模型网关（第一版内置透传网关，用设备令牌作为每人的 Key；以后需要多厂商协议转换时再引入 LiteLLM） | `gateway/`、`plugins/` | 已完成（第一版） |
 | 5 | 管理后台第一版（成员、设备、用量、审计）；本地调试完成后部署 | `gateway/` | 已完成 |
-| 5.1 | 部署：公司内网集群 office-test（Rancher，infra 仓库的 Fleet：`fleet/apps/agent-work`），经香港 frps 对外；镜像由 `.github/workflows/image.yml` 推到阿里云 ACR；在负责人电脑上打出签名的 mac 安装包；里程碑 M1：内测 | `deploy/`、infra | 已上线（2026-10-06，infra#1）：`https://agent.glwork.net`、`frp.glwork.net`、`*.glwork.app`，证书由 cert-manager 签发，数据在持久卷（重启验证过），管理员 wuming；Docker Compose（`deploy/compose.yml`）保留为备用；mac 安装包待打 |
+| 5.1 | 部署：公司内网集群 office-test（Rancher，infra 仓库的 Fleet：`fleet/apps/agent-work`），经香港 frps 对外；镜像由 `.github/workflows/image.yml` 推到阿里云 ACR；在负责人电脑上打出签名的 mac 安装包；里程碑 M1：内测 | `deploy/`、infra | 已上线（2026-10-06，infra#1）：`https://agent.glwork.net`、`frp.glwork.net`、`*.glwork.app`，证书由 cert-manager 签发，管理员 wuming；数据 2026-10-08 起在内网 PostgreSQL（db-1 internal 实例的 `agent_work`，db-provisioner 建库，Secret `agent-work-db`，infra#3/#4），原 SQLite 文件留在持久卷上作备份；Docker Compose（`deploy/compose.yml`）保留为备用；mac 安装包待打 |
 | 5.2 | 厂商管理（API Key 和账号两种登录方式）、加密 Key、模型开放、按成员分配、多厂商模型网关、公共配置 | `gateway/`、`plugins/` | 已完成；客户端读取公共配置和 CLI 账号的接口留到阶段 8 |
 | 5.3 | 管理后台重做（SvelteKit + shadcn-svelte，和公司服务同进程）：订阅、独立 Key、内部 Key、系统配置读取接口、成员工作台 | `admin/`、`gateway/` | 已完成 |
 | 6 | 自动更新：OSS 和强制更新策略（0006）；发布流程集成到 infra（Fleet）；里程碑 M2：全员推广 | `patches/`、`scripts/` | |
