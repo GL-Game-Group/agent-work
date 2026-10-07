@@ -14,7 +14,8 @@
     "typecheck": "tsc -p .",
     "dev": "node --env-file-if-exists=.env scripts/dev.ts",
     "start:local": "AGENT_WORK_ENV_FILE=.env node src/main.ts",
-    "admin:local": "AGENT_WORK_ENV_FILE=.env node src/cli.ts"
+    "admin:local": "AGENT_WORK_ENV_FILE=.env node src/cli.ts",
+    "migrate-sqlite": "node src/migrate-sqlite.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite-socket": "^0.2.11",
