@@ -44,7 +44,9 @@ services:
       AGENT_WORK_TRUST_PROXY: '1'
       # Behind Cloudflare and frp's TLS passthrough, Traefik sees only this host; Cloudflare names the client.
       AGENT_WORK_CLIENT_IP_HEADER: cf-connecting-ip
-      AGENT_WORK_DB: /data/gateway.db
+      # One box: the data in PGlite (PostgreSQL inside the service) on the data volume.
+      # With a PostgreSQL server, set DATABASE_URL in deploy/.env instead.
+      AGENT_WORK_DATA_DIR: /data/pglite
       AGENT_WORK_FRPS_ADDR: frp.glgwork.com
       AGENT_WORK_FRPS_PORT: '443'
       AGENT_WORK_FRPS_PROTOCOL: wss

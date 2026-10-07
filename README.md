@@ -9,7 +9,7 @@
 | `overlay/` | 按相同路径覆盖到副本上的文件：图标、安装器素材、打包配置模板 | 不改源码，只替换文件 |
 | `plugins/` | 团队插件，独立的 pnpm workspace | 功能代码只写在这里 |
 | `build/upstream/` | 构建副本：submodule 的 git worktree + 补丁 + 覆盖文件 | 生成物，Git 忽略 |
-| `gateway/` | 公司服务的核心：GitHub 登录、桌面端设备令牌、模型网关、配置下发（`/agent-work/*` 的协议），以及后台用到的数据和业务规则（`services.ts`）、管理员命令行。Node 24 直接运行 TypeScript，没有运行时依赖 | 安全边界：改动必须带测试 |
+| `gateway/` | 公司服务的核心：GitHub 登录、桌面端设备令牌、模型网关、配置下发（`/agent-work/*` 的协议），以及后台用到的数据和业务规则（`services.ts`）、管理员命令行。Node 24 直接运行 TypeScript；运行时依赖只有数据库驱动（`pg`、PGlite） | 安全边界：改动必须带测试 |
 | `admin/` | 管理后台和成员工作台（SvelteKit + shadcn-svelte）。和 `gateway/` 跑在同一个进程里，`server.js` 是公司服务在生产环境的入口 | 页面只调用 `gateway/src/services.ts`，业务规则不写在页面里 |
 
 ## 公司服务
@@ -58,7 +58,7 @@
 
 ```sh
 pnpm install
-pnpm admin:dev           # 完整的公司服务 http://127.0.0.1:5173：模拟 GitHub（登录时选择要扮演的成员）和演示数据，数据在内存里
+pnpm admin:dev           # 完整的公司服务 http://127.0.0.1:5173：模拟 GitHub（登录时选择要扮演的成员）和演示数据，数据在内存里的 PGlite（设 AGENT_WORK_DEV_DB=<目录> 则保存在该目录）
 pnpm admin:dev:github    # 用 gateway/.env 的真实配置（真实 GitHub 登录），端口取 AGENT_WORK_PUBLIC_ORIGIN（默认 8787）
 pnpm service:local       # 构建后按生产方式启动（node admin/server.js），读 gateway/.env
 pnpm gateway:test        # 公司服务：类型检查 + 测试
@@ -73,7 +73,17 @@ pnpm --filter @agent-work/dsh-tunnel test   # 内网穿透插件：frpc 配置�
 AGENT_WORK_DSH=<装有 dsh 的目录> AGENT_WORK_FRP_DIR=<frp 发行包目录> node --test plugins/tunnel/test/tunnel.e2e.mjs   # 真实 Host + frps + frpc 的端到端测试
 ```
 
-数据库会自动迁移（现在是第 6 版，新增隧道相关的表）。迁移前先备份 `gateway.db`，并且要用同一个 `AGENT_WORK_SECRET_KEY`。
+数据库是 PostgreSQL（`gateway/src/sql.ts`）：设了 `DATABASE_URL`（或 `AGENT_WORK_DATABASE_URL`）就连那台 PostgreSQL；没设时用 PGlite（编译成 WebAssembly、跑在服务进程里的 PostgreSQL），数据放在 `AGENT_WORK_DATA_DIR`（容器里默认 `/data/pglite`，本地 `gateway/.env` 写 `./data/pglite`）。测试和 `pnpm admin:dev` 用内存里的 PGlite。表结构在 `gateway/src/schema.ts`，按 `schema_version` 表里的版本号逐步自动迁移（现在是第 1 版，等于原来 SQLite 的第 8 版）。PGlite 的数据目录同一时间只能由一个进程打开，所以用 PGlite 时管理员命令行要先停服务，再加 `--service-stopped`。
+
+以前的 SQLite 文件（`AGENT_WORK_DB`）不再读取；还设着 `AGENT_WORK_DB` 而没有 `DATABASE_URL` / `AGENT_WORK_DATA_DIR` 时，服务拒绝启动，免得在空库上启动。搬数据用一次性脚本（先停服务；SQLite 只读打开；目标库已有数据时拒绝，`--force` 先清空；逐表核对行数，不一致时以非零退出；不打印任何值）：
+
+```sh
+sqlite3 gateway/data/gateway.db ".backup 'gateway-copy.db'"     # 先做一份一致的副本
+DATABASE_URL=postgres://… node gateway/src/migrate-sqlite.ts gateway-copy.db       # 或 AGENT_WORK_DATA_DIR=<PGlite 目录>
+pnpm --filter @agent-work/gateway migrate-sqlite <文件>        # 同上（路径相对 gateway/）
+```
+
+SQLite 文件要在第 7 或第 8 版（更早的先用旧版服务打开一次）。密钥（厂商 Key、令牌摘要）原样复制，所以要继续用同一个 `AGENT_WORK_SECRET_KEY`。
 
 让本地的桌面端连到开发服务：在 `$DSH_HOME/profiles/desktop/cordis.patch.yml` 加上
 
@@ -139,7 +149,7 @@ pnpm package package:desktop:mac:arm64       # 签名安装包
 
 - 镜像：`main` 上 `admin/`、`gateway/`、`deploy/Dockerfile` 有改动时，`.github/workflows/image.yml` 调用组织流水线构建并推到 `glwork-registry.cn-hongkong.cr.aliyuncs.com/glwork/agent-work:<提交 SHA>`。发布新版本：在 infra 的 `fleet/apps/agent-work/company-service.yaml` 把镜像标签改成新的 SHA，提 PR 合并，Fleet 滚动更新。
 - 访问路径：`agent.glwork.net`、`frp.glwork.net`、`*.glwork.app` 的 DNS（external-dns 建，不经 Cloudflare 代理）指向香港 frps 8.217.141.116 → 集群里的 frpc → Traefik（cert-manager 签发的证书）→ 公司服务 / 成员 frps。
-- 数据：SQLite 在静态卷 `agent-work-data`（`prod-1` 的 `/var/lib/agent-work/data`）。密钥在命名空间 `agent-work` 的 Secret `agent-work-env`（`GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`AGENT_WORK_SECRET_KEY`、`AGENT_WORK_FRP_PLUGIN_SECRET`），不在 Git；加密主密钥丢了，存着的厂商 Key 就读不出来，要和数据一起备份。
+- 数据：线上目前是 SQLite，在静态卷 `agent-work-data`（`prod-1` 的 `/var/lib/agent-work/data`）。从 PostgreSQL 版本的镜像起，服务不再读 SQLite（只设了 `AGENT_WORK_DB` 时拒绝启动），上线前要切到公司内网的 PostgreSQL 18：Secret 里加 `DATABASE_URL`，停掉服务，用新镜像对 SQLite 文件执行一次 `node gateway/src/migrate-sqlite.ts /data/gateway.db`（见上面“数据库”一段），核对行数后去掉 `AGENT_WORK_DB`，再启动新镜像；旧镜像和 SQLite 文件留着可以回滚。密钥在命名空间 `agent-work` 的 Secret `agent-work-env`（`GITHUB_CLIENT_ID`、`GITHUB_CLIENT_SECRET`、`AGENT_WORK_SECRET_KEY`、`AGENT_WORK_FRP_PLUGIN_SECRET`），不在 Git；加密主密钥丢了，存着的厂商 Key 就读不出来，要和数据一起备份。
 - 出站：经 `egress-proxy`（香港）访问 GitHub 和模型厂商，`NODE_USE_ENV_PROXY=1` 让 Node 按 `HTTPS_PROXY` 走代理。
 - 管理：项目自己的 kubeconfig（只限命名空间 `agent-work`，90 天，infra 的 `scripts/tenant-kubeconfig.sh agent-work 90 <文件>` 签发）放在 `deploy/agent-work.kubeconfig`（不入库）：
 
@@ -160,13 +170,13 @@ kubectl --kubeconfig $K logs deploy/agent-work --tail 100
 - 访问路径：Cloudflare（代理，`glgwork.com` 打开了“始终使用 HTTPS”）→ 服务器 443 → 基础设施 frps 按 SNI → frpc-ingress → Traefik → 公司服务 / frps。Traefik 看到的来源都是本机，公司服务从 `CF-Connecting-IP` 取客户端地址（`AGENT_WORK_CLIENT_IP_HEADER`，只用于审计和限流）。
 - `dynamic.yml`：路由。`agent.glgwork.com` → 公司服务，其中 `/agent-work/frp/` 在公网一律 403（frps 在内部网络回调）；`frp.glgwork.com` → frps（frpc 的 wss）；成员网页隧道的泛域名 → frps。没有按来源地址放行的规则。证书是 `deploy/certs/` 里的 Cloudflare 源站证书（不入库）：`glgwork.com.pem/.key`、`glwork.app.pem/.key`。签发：Cloudflare 令牌需要 “SSL and Certificates: Edit” 权限，用 `POST /certificates`（`request_type: origin-rsa`，15 年）。
 - 成员网页隧道在 `glwork.app`（`名字-成员.glwork.app`，后台“内网穿透 → 域名”里添加），`glwork.dev` 留给测试服务。隧道泛域名单独一条 proxy（`agent-work-tunnels`）：frps 遇到任何域名冲突会拒绝整条登记。`.app` 在浏览器里强制 HTTPS。
-- 服务器上的 `/opt/agent-work/deploy/.env`（权限 600，模板是 `.env.example`）放密钥；数据库在 `data` 卷里，备份在 `/opt/agent-work-backups`（属主 uid 1000，即容器里的 node 用户；`backup.sh`，cron 每天 3:17，保留 14 天）。
+- 服务器上的 `/opt/agent-work/deploy/.env`（权限 600，模板是 `.env.example`）放密钥；数据在 `data` 卷的 PGlite 目录 `/data/pglite`（`.env` 里设了 `DATABASE_URL` 时改用那台 PostgreSQL），备份在 `/opt/agent-work-backups`（属主 uid 1000，即容器里的 node 用户；`backup.sh` 打包 PGlite 目录，期间服务停几秒，cron 每天 3:17，保留 14 天）。
 
 ```sh
 AGENT_WORK_SERVER=root@47.236.206.86 AGENT_WORK_SSH_OPTS='-i ~/.ssh/agent_work_deploy' deploy/push.sh
 # 发送构建需要的文件（白名单），在服务器上执行 update.sh：先备份数据库，构建以内容哈希为标签的镜像，
 # 启动后等健康检查（/agent-work/healthz），不通过就回到上一个镜像
-ssh root@47.236.206.86 'cd /opt/agent-work/deploy && docker compose exec agent-work node gateway/src/cli.ts member list'   # 管理员命令行
+ssh root@47.236.206.86 'cd /opt/agent-work/deploy && docker compose stop agent-work && docker compose run --rm --no-deps agent-work node gateway/src/cli.ts member list --service-stopped; docker compose start agent-work'   # 管理员命令行（PGlite 时要先停服务）
 ```
 
 仓库推到 GitHub 后，可以改成服务器上 `git pull` 再执行 `update.sh`。

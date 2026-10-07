@@ -18,20 +18,24 @@ RUN pnpm install --frozen-lockfile --filter @agent-work/admin...
 COPY gateway gateway
 COPY admin admin
 RUN pnpm --filter @agent-work/admin build
+# The company service's runtime dependencies (pg, PGlite) as a self-contained node_modules.
+RUN pnpm --filter @agent-work/gateway deploy --prod --legacy /deploy/gateway
 
 FROM node:24.21.0-slim
 WORKDIR /app
 ENV NODE_ENV=production
 # Only what runs: the console's build output and server, and the company service's source
-# (admin's one runtime dependency, linked as in the workspace). Small layers, so the internal
-# cluster pulls them quickly.
+# (admin's one runtime dependency, linked as in the workspace) with its own dependencies
+# (pg, PGlite). Small layers, so the internal cluster pulls them quickly.
 COPY --from=build --chown=node:node /app/package.json /app/
 COPY --from=build --chown=node:node /app/gateway/package.json /app/gateway/
 COPY --from=build --chown=node:node /app/gateway/src /app/gateway/src
+COPY --from=build --chown=node:node /deploy/gateway/node_modules /app/gateway/node_modules
 COPY --from=build --chown=node:node /app/admin/package.json /app/admin/server.js /app/admin/
 COPY --from=build --chown=node:node /app/admin/build /app/admin/build
 RUN mkdir -p /app/admin/node_modules/@agent-work && ln -s ../../../gateway /app/admin/node_modules/@agent-work/gateway
-# A named volume mounted here takes this ownership on first use.
+# PGlite's data directory (/data/pglite) when no DATABASE_URL is set; a named volume mounted
+# here takes this ownership on first use.
 RUN mkdir -p /data /backups && chown node:node /data /backups
 USER node
 EXPOSE 8787
