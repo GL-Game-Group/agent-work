@@ -25,6 +25,7 @@ const QWEN_TTS = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal
 const QWEN_TOKEN = 'https://dashscope.aliyuncs.com/api/v1/tokens'
 const VOLC_ASR = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
 const VOLC_TTS = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
+const VOLC_ASR_FLASH = 'https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash'
 const QWEN_TTS_REALTIME = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
 const VOLC_TTS_BIDIRECTION = 'wss://openspeech.bytedance.com/api/v3/tts/bidirection'
 /** Streaming read-aloud comes as 16 kHz 16-bit mono PCM, what the phone's audio engine plays. */
@@ -300,15 +301,89 @@ function readVolc(data) {
   return { kind: 'result', text, last: (flags & 2) !== 0, raw }
 }
 
+/** 识别 (normal mode): the whole recording in one request, as the phone sends it. */
+async function fileAsr({ vendor, key, model }, pcm) {
+  const wavBase64 = wav(pcm).toString('base64')
+  if (vendor === 'qwen') {
+    const response = await fetch(QWEN_TTS, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        input: { messages: [{ role: 'user', content: [{ audio: `data:audio/wav;base64,${wavBase64}` }] }] },
+        parameters: { asr_options: { enable_itn: true } }
+      })
+    })
+    const body = await response.text()
+    log('qwen file asr', response.status, body.slice(0, 300))
+    if (!response.ok) throw new Error(`千问识别失败 ${response.status}: ${body.slice(0, 400)}`)
+    return JSON.parse(body)?.output?.choices?.[0]?.message?.content?.[0]?.text ?? ''
+  }
+  const response = await fetch(VOLC_ASR_FLASH, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': key,
+      'x-api-resource-id': model,
+      'x-api-request-id': randomUUID(),
+      'x-api-sequence': '-1'
+    },
+    body: JSON.stringify({
+      user: { uid: 'glwork-voice-test' },
+      audio: { data: wavBase64, format: 'wav' },
+      request: { model_name: 'bigmodel', enable_itn: true, enable_punc: true }
+    })
+  })
+  const status = response.headers.get('x-api-status-code')
+  const body = await response.text()
+  log('volc file asr', response.status, status, response.headers.get('x-api-message') ?? '', body.slice(0, 300))
+  if (!response.ok || (status && status !== '20000000')) {
+    throw new Error(`火山识别失败 ${response.status} ${status ?? ''} ${response.headers.get('x-api-message') ?? ''}: ${body.slice(0, 400)}`)
+  }
+  return JSON.parse(body)?.result?.text ?? ''
+}
+
 /** One recognition: the page's first message names the vendor; then PCM; then "finish". */
 function relayAsr(page) {
   let upstream = null
   let sequence = 1
+  let file = null
   const tell = (body) => page.readyState === 1 && page.send(JSON.stringify(body))
 
   page.on('message', async (data, isBinary) => {
+    if (file) {
+      if (isBinary) {
+        file.pcm.push(Buffer.from(data))
+      } else if (data.toString() === 'finish') {
+        const seconds = file.pcm.reduce((n, b) => n + b.length, 0) / 32000
+        tell({ type: 'log', text: `录了 ${seconds.toFixed(1)} 秒，整段发给厂商识别…` })
+        const started = Date.now()
+        try {
+          const text = await fileAsr(file.start, Buffer.concat(file.pcm))
+          tell({ type: 'log', text: `识别用时 ${Date.now() - started} ms` })
+          tell({ type: 'done', text })
+        } catch (error) {
+          tell({ type: 'error', text: String(error.message) })
+        }
+      }
+      return
+    }
     if (!upstream && !isBinary) {
       const start = JSON.parse(data.toString())
+      if (start.mode === 'file') {
+        let key = start.key
+        if (start.vendor === 'qwen' && start.temporary) {
+          try {
+            key = await qwenTemporaryKey(start.key)
+          } catch (error) {
+            tell({ type: 'error', text: String(error.message) })
+            return
+          }
+        }
+        file = { start: { ...start, key }, pcm: [] }
+        tell({ type: 'log', text: '普通模式：说完点停止，再整段识别' })
+        return
+      }
       let key = start.key
       if (start.vendor === 'qwen' && start.temporary) {
         try {

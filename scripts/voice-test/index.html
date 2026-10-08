@@ -38,7 +38,7 @@
       .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
       .card h2 { font-size: 16px; margin: 0 0 12px; }
       label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 12px; }
-      input, textarea {
+      input, textarea, select {
         width: 100%;
         padding: 8px 10px;
         border: 1px solid var(--border);
@@ -94,6 +94,11 @@
 
         <div class="section">
           <strong>语音识别</strong>
+          <label>识别方式</label>
+          <select data-asr-mode>
+            <option value="realtime">实时（边说边出字）</option>
+            <option value="file">普通（说完整段识别）</option>
+          </select>
           <label>识别模型</label>
           <input data-asr-model />
           <div class="row">
@@ -132,6 +137,7 @@
           id: 'qwen',
           name: '千问（阿里云百炼）',
           asrModel: 'qwen3-asr-flash-realtime',
+          asrFileModel: 'qwen3-asr-flash',
           ttsModel: 'qwen3-tts-flash',
           ttsStreamModel: 'qwen3-tts-flash-realtime',
           voice: 'Cherry',
@@ -142,6 +148,7 @@
           id: 'volc',
           name: '火山（豆包语音）',
           asrModel: 'volc.seedasr.sauc.duration',
+          asrFileModel: 'volc.bigasr.auc_turbo',
           ttsModel: 'seed-tts-2.0',
           ttsStreamModel: 'seed-tts-2.0',
           voice: 'zh_female_vv_uranus_bigtts',
@@ -155,6 +162,9 @@
         const $ = (name) => node.querySelector(`[data-${name}]`)
         $('name').textContent = vendor.name
         $('asr-model').value = vendor.asrModel
+        $('asr-mode').onchange = () => {
+          $('asr-model').value = $('asr-mode').value === 'file' ? vendor.asrFileModel : vendor.asrModel
+        }
         $('tts-model').value = vendor.ttsModel
         $('tts-stream-model').value = vendor.ttsStreamModel
         $('tts-voice').value = vendor.voice
@@ -205,7 +215,7 @@
             else if (body.type === 'event') log(typeof body.event === 'string' ? body.event : JSON.stringify(body.event))
           }
           socket.onopen = async () => {
-            socket.send(JSON.stringify({ vendor: vendor.id, key: key(), model: $('asr-model').value.trim(), temporary: temporary() }))
+            socket.send(JSON.stringify({ vendor: vendor.id, key: key(), model: $('asr-model').value.trim(), temporary: temporary(), mode: $('asr-mode').value }))
             try {
               const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true } })
               const context = new AudioContext({ sampleRate: 16000 })
