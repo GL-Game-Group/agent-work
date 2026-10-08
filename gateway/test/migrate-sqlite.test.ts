@@ -84,10 +84,19 @@ const KEYS: Record<string, string> = {
 }
 
 /** Every row of a table on both sides, column by column (PostgreSQL's own `seq` left out). */
+/** Columns PostgreSQL schema steps added after the SQLite era: copied rows leave them empty. */
+const ADDED: Record<string, string[]> = { tunnels: ['client'] }
+
 async function sameRows(source: DatabaseSync, target: Sql, table: string): Promise<void> {
   const order = `${KEYS[table] ?? ''}`
   const want = (source.prepare(`select * from ${table} order by ${order}`).all() as Record<string, unknown>[]).map(row => ({ ...row }))
-  const got = (await target.query(`select * from ${table} order by ${order}`)).map(({ seq: _seq, ...row }) => row)
+  const got = (await target.query(`select * from ${table} order by ${order}`)).map(({ seq: _seq, ...row }) => {
+    for (const column of ADDED[table] ?? []) {
+      assert.equal(row[column], null, `${table}.${column}`)
+      delete row[column]
+    }
+    return row
+  })
   assert.deepEqual(got, want, table)
 }
 

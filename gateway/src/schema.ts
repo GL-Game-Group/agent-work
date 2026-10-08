@@ -3,7 +3,8 @@
  * `schema_version`: version 1 is the SQLite schema as it stood at its own
  * version 8 (members and credentials, login state, usage, vendors and keys,
  * subscriptions, system config, plugins, tunnels, voice). Later changes add a
- * step; a step never changes once released.
+ * step; a step never changes once released:
+ * - 2: `tunnels.client`, which GL Work registered a 手机远程 tunnel (null: the DSH desktop).
  *
  * - Millisecond timestamps, GitHub ids and token counts are `bigint`; 0/1 flags stay `integer`.
  * - Every text column uses the "C" collation: comparisons and `order by` go by
@@ -263,6 +264,7 @@ const STEPS: Step[] = [
       }
     },
   },
+  { sql: `alter table tunnels add column client ${T}` },
 ]
 
 export const SCHEMA_VERSION = STEPS.length

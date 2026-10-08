@@ -700,7 +700,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     if (vhost === null) { json(res, 503, { error: '公司服务没有配置手机远程' }); return }
     let host: string
     try {
-      ({ host } = await tunnels.remoteTarget(member, id))
+      ({ host } = await tunnels.remoteTarget(member, id, orca !== null ? 'orca' : 'dsh'))
     } catch (error) {
       if (!Refusal.is(error)) throw error
       json(res, error.status, { error: error.message })
@@ -746,7 +746,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     if (vhost === null) { refuseUpgrade(socket, 503, '公司服务没有配置手机远程'); return }
     let host: string
     try {
-      ({ host } = await tunnels.remoteTarget(principal.member, id))
+      ({ host } = await tunnels.remoteTarget(principal.member, id, path === '/' ? 'orca' : 'dsh'))
     } catch (error) {
       if (!Refusal.is(error)) throw error
       refuseUpgrade(socket, error.status, error.message)
@@ -760,7 +760,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       void (async () => {
         const still = await store.authenticate(token, 'phone')
         let allowed = still !== undefined
-        if (still !== undefined) try { await tunnels.remoteTarget(still.member, id) } catch { allowed = false }
+        if (still !== undefined) try { await tunnels.remoteTarget(still.member, id, path === '/' ? 'orca' : 'dsh') } catch { allowed = false }
         if (!allowed) close()
       })().catch((error: unknown) => { console.error('gateway: remote recheck failed', error) })
     }, REMOTE_RECHECK_MS)

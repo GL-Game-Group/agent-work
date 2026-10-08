@@ -258,28 +258,53 @@ describe('手机远程', () => {
     assert.equal((await store.recentAudit()).filter(e => e.action === 'remote-connect').length, 1)
   })
 
-  it('relays an Orca pairing request and Orca\'s WebSocket to the phone\'s own Mac only', async () => {
+  it('relays an Orca pairing request and Orca\'s WebSocket to the phone\'s own GL Work on Orca only', async () => {
     const alice = (await rt.tunnels.list('alice')).find(t => t.type === 'remote')
-    const bob = (await rt.tunnels.list('bob')).find(t => t.type === 'remote')
-    assert.ok(alice !== undefined && bob !== undefined)
-    const headers = { 'authorization': `Bearer ${phone.alice as string}`, 'content-type': 'application/json', 'cookie': 'x=1' }
-    const pair = await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/pair`, headers, '{"deviceName":"iPhone"}')
+    assert.ok(alice !== undefined)
+    // Bob's Mac moves to GL Work on Orca: asking again marks the same tunnel.
+    const bob = await store.member('bob')
+    const bobMac = await store.credential(device.bob?.id as string)
+    assert.ok(bob !== undefined && bobMac !== undefined)
+    const orcaMac = await rt.tunnels.create(bob, bobMac, { type: 'remote', client: 'orca' })
+    assert.equal(orcaMac.client, 'orca')
+    assert.equal((await rt.tunnels.create(bob, bobMac, { type: 'remote' })).client, 'orca', 'a later request without a client keeps it')
+    assert.equal((await openProxy('bob', orcaMac.id)).reject, false)
+    // And an old DSH Mac of Bob's, also online.
+    const old = await store.issueCredential('bob', 'device', 'bob 的旧 Mac', 86_400_000)
+    device.bobOld = { id: old.credential.id, token: old.token }
+    const oldMac = await rt.tunnels.create(bob, old.credential, { type: 'remote' })
+    assert.equal(oldMac.client, null)
+    assert.equal((await rt.tunnels.frp('NewProxy', { user: { user: 'bob', metas: { token: old.token } }, proxy_name: `bob.${oldMac.id}`, proxy_type: 'http', custom_domains: [oldMac.host] })).reject, false)
+
+    const asBob = { authorization: `Bearer ${phone.bob as string}`, 'content-type': 'application/json' }
+    const listed = JSON.parse((await send(port, 'GET', '/agent-work/remote/hosts', { authorization: asBob.authorization })).body) as { hosts: { id: string; client: string }[] }
+    assert.deepEqual(listed.hosts.map(h => [h.id, h.client]).toSorted(), [[orcaMac.id, 'orca'], [oldMac.id, 'dsh']].toSorted())
+
+    const pair = await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/orca/pair`, { ...asBob, cookie: 'x=1' }, '{"deviceName":"iPhone"}')
     assert.equal(pair.status, 200)
-    assert.deepEqual(seen.at(-1), { host: alice.host, path: '/glwork/remote/pair', authorization: undefined, cookie: undefined, body: '{"deviceName":"iPhone"}' })
+    assert.deepEqual(seen.at(-1), { host: orcaMac.host, path: '/glwork/remote/pair', authorization: undefined, cookie: undefined, body: '{"deviceName":"iPhone"}' })
     assert.equal((await store.recentAudit()).filter(e => e.action === 'remote-pair').length, 1)
     const before = seen.length
+    // The DSH Mac over the Orca path, the Orca Mac over the DSH path: refused with a reason, nothing relayed.
+    const wrongOld = await send(port, 'POST', `/agent-work/remote/${oldMac.id}/orca/pair`, asBob, '{}')
+    assert.equal(wrongOld.status, 409)
+    assert.match(wrongOld.body, /旧版/u)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/api/session.list`, asBob, '{}')).status, 409)
     // Someone else's Mac, a desktop token, no token, the wrong verb, other paths under orca/.
-    assert.equal((await send(port, 'POST', `/agent-work/remote/${bob.id}/orca/pair`, headers, '{}')).status, 404)
-    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/pair`, { authorization: `Bearer ${device.alice?.token as string}` }, '{}')).status, 404)
-    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/pair`, { 'content-type': 'application/json' }, '{}')).status, 401)
-    assert.equal((await send(port, 'GET', `/agent-work/remote/${alice.id}/orca/pair`, headers)).status, 404)
-    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca`, headers, '{}')).status, 404)
-    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/auth/github/device`, headers, '{}')).status, 403)
+    const asAlice = { authorization: `Bearer ${phone.alice as string}`, 'content-type': 'application/json' }
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/orca/pair`, asAlice, '{}')).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/orca/pair`, { authorization: `Bearer ${device.bob?.token as string}` }, '{}')).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/orca/pair`, { 'content-type': 'application/json' }, '{}')).status, 401)
+    assert.equal((await send(port, 'GET', `/agent-work/remote/${orcaMac.id}/orca/pair`, asBob)).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/orca`, asBob, '{}')).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${orcaMac.id}/orca/auth/github/device`, asBob, '{}')).status, 403)
     assert.equal(seen.length, before)
+    // Alice's DSH Mac still works the DSH way.
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/api/session.list`, asAlice, '{}')).status, 200)
 
-    const ws = await upgrade(port, `/agent-work/remote/${alice.id}/orca`, { Authorization: `Bearer ${phone.alice as string}` })
+    const ws = await upgrade(port, `/agent-work/remote/${orcaMac.id}/orca`, { Authorization: `Bearer ${phone.bob as string}` })
     assert.match(ws.head, /^HTTP\/1\.1 101/u)
-    assert.match(ws.head, new RegExp(`X-Seen-Host: ${alice.host as string}`, 'u'))
+    assert.match(ws.head, new RegExp(`X-Seen-Host: ${orcaMac.host as string}`, 'u'))
     assert.match(ws.head, /X-Seen-Auth: none/u)
     assert.match(ws.head, /X-Seen-Path: \/\r?$/mu)
     const echoed = new Promise<string>((resolve) => { ws.socket.once('data', (chunk: Buffer) => { resolve(chunk.toString()) }) })
@@ -287,11 +312,13 @@ describe('手机远程', () => {
     assert.equal(await echoed, 'sealed bytes')
     ws.socket.destroy()
     for (const [path, auth, status] of [
-      [`/agent-work/remote/${bob.id}/orca`, phone.alice, 404],
-      [`/agent-work/remote/${alice.id}/orca`, device.alice?.token, 401],
-      [`/agent-work/remote/${alice.id}/orca`, 'awp_forged', 401],
-      [`/agent-work/remote/${alice.id}/orca/pair`, phone.alice, 404],
-      [`/agent-work/remote/${alice.id}/orca/x`, phone.alice, 404],
+      [`/agent-work/remote/${orcaMac.id}/orca`, phone.alice, 404],
+      [`/agent-work/remote/${oldMac.id}/orca`, phone.bob, 409],
+      [`/agent-work/remote/${orcaMac.id}/api/events.mux`, phone.bob, 409],
+      [`/agent-work/remote/${orcaMac.id}/orca`, device.bob?.token, 401],
+      [`/agent-work/remote/${orcaMac.id}/orca`, 'awp_forged', 401],
+      [`/agent-work/remote/${orcaMac.id}/orca/pair`, phone.bob, 404],
+      [`/agent-work/remote/${orcaMac.id}/orca/x`, phone.bob, 404],
     ] as const) {
       const refused = await upgrade(port, path, { Authorization: `Bearer ${String(auth)}` })
       assert.match(refused.head, new RegExp(`^HTTP/1\\.1 ${String(status)}`, 'u'), path)
@@ -321,6 +348,6 @@ describe('手机远程', () => {
     // A Mac that signed out drops off the list.
     await store.revokeCredential(device.alice?.id as string)
     const hosts = JSON.parse((await send(port, 'GET', '/agent-work/remote/hosts', { authorization: `Bearer ${phone.bob as string}` })).body) as { hosts: unknown[] }
-    assert.equal(hosts.hosts.length, 1)
+    assert.equal(hosts.hosts.length, 2, "Bob's two Macs; Alice's is gone from everyone's view")
   })
 })

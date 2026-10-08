@@ -70,6 +70,8 @@ export interface Tunnel {
   closedBy: string | null
   online: boolean
   lastSeenAt: number | null
+  /** 手机远程: which GL Work registered it ('orca'), or null for the DSH desktop. */
+  client: string | null
   createdAt: number
   updatedAt: number
 }
@@ -90,6 +92,8 @@ interface TunnelRow {
   id: string; member: string; device: string; type: TunnelType; name: string; domain: string | null; local_port: number
   protection: 'public' | 'password'; ssh_access: string | null; secret_key: string | null; public_port: number | null
   closed_by: string | null; online: number; last_seen_at: number | null; created_at: number; updated_at: number
+  /** 手机远程: 'orca' when GL Work on Orca registered it; null for the DSH desktop. */
+  client: string | null
 }
 
 function hostOf(row: Pick<TunnelRow, 'type' | 'name' | 'member' | 'domain'>): string | null {
@@ -243,7 +247,7 @@ export class Tunnels {
       localPort: row.local_port, protection: row.protection,
       sshAccess: row.ssh_access === null ? null : row.ssh_access === 'all' ? 'all' : JSON.parse(row.ssh_access) as string[],
       publicPort: row.public_port, closedBy: row.closed_by, online: row.online === 1 && fresh, lastSeenAt: row.last_seen_at,
-      createdAt: row.created_at, updatedAt: row.updated_at,
+      client: row.client ?? null, createdAt: row.created_at, updatedAt: row.updated_at,
     }
   }
 
@@ -323,7 +327,7 @@ export class Tunnels {
   private async createNow(member: Member, device: Credential, input: Record<string, unknown>): Promise<Tunnel> {
     const settings = await this.settings()
     if (!settings.enabled || this.server === null) throw new Refusal(409, '内网穿透没有开启')
-    if (input.type === 'remote') return this.createRemote(member, device, settings)
+    if (input.type === 'remote') return this.createRemote(member, device, settings, input.client === 'orca' ? 'orca' : null)
     const type = input.type === 'ssh' ? 'ssh' : input.type === 'http' ? 'http' : null
     if (type === null) throw new Refusal(400, '隧道类型只能是网页或 SSH')
     if (type === 'http' && !member.tunnels) throw new Refusal(403, '你还没有开通网页隧道')
@@ -362,21 +366,28 @@ export class Tunnels {
   }
 
   /** 手机远程 for this device: one per device, so asking again returns the same one. */
-  private async createRemote(member: Member, device: Credential, settings: TunnelSettings): Promise<Tunnel> {
+  private async createRemote(member: Member, device: Credential, settings: TunnelSettings, client: 'orca' | null): Promise<Tunnel> {
     if (!settings.remote) throw new Refusal(403, '管理员没有开启手机远程')
     const existing = await this.db.one<TunnelRow>(`select * from tunnels where type = 'remote' and device = ?`, [device.id])
-    if (existing !== undefined) return this.toTunnel(existing)
+    if (existing !== undefined) {
+      // The same device may move from the DSH desktop to GL Work on Orca: the phone then pairs the new way.
+      if (client !== null && existing.client !== client) {
+        await this.db.run('update tunnels set client = ?, updated_at = ? where id = ?', [client, this.now(), existing.id])
+        return await this.get(existing.id) as Tunnel
+      }
+      return this.toTunnel(existing)
+    }
     // The host name is the only thing frps routes on, so it is random rather than guessable.
     const name = `r${randomBytes(12).toString('hex')}`
     const id = `tun_${randomSecret().slice(0, 10).replace(/[^A-Za-z0-9]/gu, 'x')}`
-    await this.db.run(`insert into tunnels (id, member, device, type, name, domain, local_port, protection, created_at, updated_at)
-      values (?, ?, ?, 'remote', ?, ?, 0, 'public', ?, ?)`,
-    [id, member.name, device.id, name, REMOTE_DOMAIN, this.now(), this.now()])
+    await this.db.run(`insert into tunnels (id, member, device, type, name, domain, local_port, protection, client, created_at, updated_at)
+      values (?, ?, ?, 'remote', ?, ?, 0, 'public', ?, ?, ?)`,
+    [id, member.name, device.id, name, REMOTE_DOMAIN, client, this.now(), this.now()])
     return await this.get(id) as Tunnel
   }
 
   /** The member's Macs that turned 手机远程 on, for the phone's list. */
-  async remotes(member: Member): Promise<{ id: string; device: string; label: string; online: boolean; closed: boolean; lastSeenAt: number | null }[]> {
+  async remotes(member: Member): Promise<{ id: string; device: string; label: string; client: 'orca' | 'dsh'; online: boolean; closed: boolean; lastSeenAt: number | null }[]> {
     const settings = await this.settings()
     const rows = await this.db.query<TunnelRow>(`select * from tunnels where type = 'remote' and member = ? order by created_at, seq`, [member.name])
     const result = []
@@ -384,7 +395,7 @@ export class Tunnels {
       const device = await this.store.credential(row.device)
       if (device === undefined || device.revokedAt !== null || device.expiresAt <= this.now()) continue
       const tunnel = this.toTunnel(row)
-      result.push({ id: row.id, device: row.device, label: device.label, online: tunnel.online, closed: row.closed_by !== null || !settings.enabled || !settings.remote, lastSeenAt: row.last_seen_at })
+      result.push({ id: row.id, device: row.device, label: device.label, client: row.client === 'orca' ? 'orca' as const : 'dsh' as const, online: tunnel.online, closed: row.closed_by !== null || !settings.enabled || !settings.remote, lastSeenAt: row.last_seen_at })
     }
     return result
   }
@@ -393,7 +404,7 @@ export class Tunnels {
    * Where the relay sends a phone's request: the member's own, running 手机远程.
    * @throws Refusal otherwise.
    */
-  async remoteTarget(member: Member, id: string): Promise<{ host: string; device: string }> {
+  async remoteTarget(member: Member, id: string, client: 'orca' | 'dsh'): Promise<{ host: string; device: string }> {
     const row = await this.row(id)
     if (row === undefined || row.type !== 'remote' || row.member !== member.name) throw new Refusal(404, '没有这台电脑')
     const settings = await this.settings()
@@ -402,6 +413,10 @@ export class Tunnels {
     const device = await this.store.credential(row.device)
     if (device === undefined || device.revokedAt !== null || device.expiresAt <= this.now()) throw new Refusal(404, '这台电脑已经退出登录')
     if (!this.toTunnel(row).online) throw new Refusal(503, '这台电脑现在不在线：请确认它开着 GL Work，并打开了手机远程')
+    // The two GL Work desktops speak different remote protocols: refuse here rather than relay to a Mac that cannot answer.
+    if ((row.client === 'orca' ? 'orca' : 'dsh') !== client) {
+      throw new Refusal(409, client === 'orca' ? '这台电脑上的 GL Work 是旧版，新版手机 App 连不上：请在电脑上换用新版 GL Work' : '这台电脑上的 GL Work 是新版，请用新版手机 App 连接')
+    }
     return { host: hostOf(row) as string, device: row.device }
   }
 
