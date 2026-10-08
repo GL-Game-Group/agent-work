@@ -62,8 +62,8 @@ export default defineConfig({
 					'style-src': ['self', 'unsafe-inline'],
 					'img-src': ['self', 'data:', 'https://avatars.githubusercontent.com'],
 					'font-src': ['self'],
-					// 语音 › 试听 plays samples the console serves itself.
-					'media-src': ['self'],
+					// 语音 › 试听 fetches a sample from the console itself (to show a refusal's reason), then plays it from a blob: URL.
+					'media-src': ['self', 'blob:'],
 					'connect-src': ['self'],
 					'form-action': ['self'],
 					'base-uri': ['none'],
