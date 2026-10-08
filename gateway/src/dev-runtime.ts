@@ -208,7 +208,8 @@ export async function startDevRuntime(options: DevRuntimeOptions): Promise<{ run
     // A data directory keeps its keys readable across restarts only with the same master key.
     secretKey: process.env.AGENT_WORK_SECRET_KEY || randomBytes(32).toString('base64'),
     // A local frps may call back on this secret path (frps.toml: path = "/agent-work/frp/<secret>").
-    frps: { addr: '127.0.0.1', port: 7000, protocol: 'tcp', pluginSecret: process.env.AGENT_WORK_FRP_PLUGIN_SECRET || randomBytes(24).toString('base64url'), publicIp: null,
+    // AGENT_WORK_DEV_FRPS_PORT: macOS's AirPlay Receiver holds 7000.
+    frps: { addr: '127.0.0.1', port: Number(process.env.AGENT_WORK_DEV_FRPS_PORT || 7000), protocol: 'tcp', pluginSecret: process.env.AGENT_WORK_FRP_PLUGIN_SECRET || randomBytes(24).toString('base64url'), publicIp: null,
       // 手机远程 relays through the local frps's vhostHTTPPort.
       vhost: { host: '127.0.0.1', port: Number(process.env.AGENT_WORK_FRPS_VHOST_PORT || 8080) } },
     ...process.env.DEEPSEEK_API_KEY ? { deepseek: { baseUrl: process.env.DEEPSEEK_UPSTREAM ?? 'https://api.deepseek.com/anthropic', apiKey: process.env.DEEPSEEK_API_KEY } } : {},
