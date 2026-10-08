@@ -27,14 +27,26 @@ export const VOICE_LIST_URL: Record<string, string> = {
   volcengine: 'https://www.volcengine.com/api/doc/getDocDetail?LibraryID=6561&DocumentID=1257544&type=online',
 }
 
+/**
+ * Each vendor offers up to four things, each switched on with its own model. The first two pairs
+ * keep their original names (an older phone reads them): `asr` is realtime recognition (实时) and
+ * `tts` read-aloud synthesized whole (语音). `asrFile` recognizes a finished recording (识别);
+ * `ttsStream` streams read-aloud as it is synthesized (实时).
+ */
 export interface VoiceVendorSettings {
-  /** Offer speech recognition (语音输入) with this vendor. */
   asr: boolean
   asrModel: string
-  /** Offer read-aloud (播报) with this vendor. */
+  asrFile: boolean
+  asrFileModel: string
+  ttsStream: boolean
+  ttsStreamModel: string
   tts: boolean
   ttsModel: string
 }
+
+const FLAGS = ['asr', 'asrFile', 'ttsStream', 'tts'] as const
+const MODEL_FIELDS = ['asrModel', 'asrFileModel', 'ttsStreamModel', 'ttsModel'] as const
+type VoiceModels = Pick<VoiceVendorSettings, (typeof MODEL_FIELDS)[number]>
 
 export interface VoiceSettings {
   vendors: Record<string, VoiceVendorSettings>
@@ -45,10 +57,23 @@ export interface VoiceSettings {
 }
 
 /** The models each vendor starts with; administrators change them under 语音. */
-const DEFAULT_MODELS: Record<string, { asrModel: string; ttsModel: string }> = {
-  // Read-aloud over HTTP (multimodal-generation, up to 600 characters a request); recognition realtime.
-  dashscope: { asrModel: 'qwen3-asr-flash-realtime', ttsModel: 'qwen3-tts-flash' },
-  volcengine: { asrModel: 'volc.seedasr.sauc.duration', ttsModel: 'seed-tts-2.0' },
+const DEFAULT_MODELS: Record<string, VoiceModels> = {
+  // Whole read-aloud over HTTP (multimodal-generation, up to 600 characters a request).
+  dashscope: {
+    asrModel: 'qwen3-asr-flash-realtime', asrFileModel: 'qwen3-asr-flash',
+    ttsStreamModel: 'qwen3-tts-flash-realtime', ttsModel: 'qwen3-tts-flash',
+  },
+  // Streaming read-aloud over the bidirectional WebSocket; whole over /api/v3/tts/unidirectional.
+  volcengine: {
+    asrModel: 'volc.seedasr.sauc.duration', asrFileModel: 'volc.bigasr.auc_turbo',
+    ttsStreamModel: 'seed-tts-2.0', ttsModel: 'seed-tts-2.0',
+  },
+}
+const NO_MODELS: VoiceModels = { asrModel: '', asrFileModel: '', ttsStreamModel: '', ttsModel: '' }
+
+/** Whether a vendor offers anything at all. */
+function offersAny(s: VoiceVendorSettings | undefined): s is VoiceVendorSettings {
+  return s !== undefined && FLAGS.some(flag => s[flag])
 }
 const DEFAULTS = { tokenTtlSeconds: 600, tokensPerHour: 60 }
 
@@ -272,8 +297,8 @@ export class Voice {
     const saved = row === undefined ? {} : JSON.parse(row.value) as Partial<VoiceSettings>
     const vendors: Record<string, VoiceVendorSettings> = {}
     for (const vendor of await this.voiceVendors()) {
-      const models = DEFAULT_MODELS[vendor.protocol ?? ''] ?? { asrModel: '', ttsModel: '' }
-      vendors[vendor.id] = { asr: false, tts: false, ...models, ...saved.vendors?.[vendor.id] }
+      const models = DEFAULT_MODELS[vendor.protocol ?? ''] ?? NO_MODELS
+      vendors[vendor.id] = { asr: false, asrFile: false, ttsStream: false, tts: false, ...models, ...saved.vendors?.[vendor.id] }
     }
     return {
       vendors,
@@ -291,10 +316,10 @@ export class Voice {
         const current = next.vendors[id]
         if (current === undefined) throw new Refusal(404, `没有语音厂商 ${id}`)
         const fields = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
-        for (const flag of ['asr', 'tts'] as const) {
+        for (const flag of FLAGS) {
           if (fields[flag] !== undefined) current[flag] = fields[flag] === true
         }
-        for (const field of ['asrModel', 'ttsModel'] as const) {
+        for (const field of MODEL_FIELDS) {
           if (fields[field] === undefined) continue
           const model = typeof fields[field] === 'string' ? fields[field].trim() : ''
           if (!MODEL_ID.test(model)) throw new Refusal(400, `模型名不正确：${model.slice(0, 40)}`)
@@ -390,20 +415,27 @@ export class Voice {
     return (await this.vendors.key(assignment.apiKey))?.status === 'active' ? assignment.apiKey : undefined
   }
 
-  /** What the phone offers this member: the vendors switched on that the member holds a key for, with their voices. */
+  /**
+   * What the phone offers this member: the vendors with something switched on that the member
+   * holds a key for. `asr` and `tts` are what older phones read; `asrFile` and `ttsStream` are the
+   * other two choices. Each read-aloud lists the enabled voices its model speaks.
+   */
   async forMember(member: string) {
     const settings = await this.settings()
     const vendors = []
     for (const vendor of await this.voiceVendors()) {
       const s = settings.vendors[vendor.id]
-      if (s === undefined || (!s.asr && !s.tts) || await this.keyFor(member, vendor) === undefined) continue
-      const voices = (await this.catalog(vendor.id))
-        .filter(v => v.state === 'enabled' && (v.models.length === 0 || v.models.includes(s.ttsModel)))
+      if (!offersAny(s) || await this.keyFor(member, vendor) === undefined) continue
+      const catalog = (await this.catalog(vendor.id)).filter(v => v.state === 'enabled')
+      const voicesFor = (model: string) => catalog
+        .filter(v => v.models.length === 0 || v.models.includes(model) || v.models.includes(model.replace(/-realtime$/u, '')))
         .map(({ id, name, description, gender, languages, family, sampleUrl }) => ({ id, name, description, gender, languages, family, sampleUrl }))
       vendors.push({
         id: vendor.id, name: vendor.name, protocol: vendor.protocol,
         asr: s.asr ? { model: s.asrModel } : null,
-        tts: s.tts ? { model: s.ttsModel, voices } : null,
+        asrFile: s.asrFile ? { model: s.asrFileModel } : null,
+        ttsStream: s.ttsStream ? { model: s.ttsStreamModel, voices: voicesFor(s.ttsStreamModel) } : null,
+        tts: s.tts ? { model: s.ttsModel, voices: voicesFor(s.ttsModel) } : null,
       })
     }
     return { tokenTtlSeconds: settings.tokenTtlSeconds, vendors }
@@ -458,7 +490,7 @@ export class Voice {
     const vendor = await this.voiceVendor(typeof vendorId === 'string' ? vendorId : '')
     const settings = await this.settings()
     const s = settings.vendors[vendor.id]
-    if (s === undefined || (!s.asr && !s.tts)) throw new Refusal(403, `${vendor.name} 没有开放`)
+    if (!offersAny(s)) throw new Refusal(403, `${vendor.name} 没有开放`)
     const keyId = await this.keyFor(member, vendor)
     if (keyId === undefined) throw new Refusal(403, `你还没有分配 ${vendor.name} 的 Key，请联系管理员`)
     const now = this.now()

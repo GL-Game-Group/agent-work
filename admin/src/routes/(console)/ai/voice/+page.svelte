@@ -114,6 +114,26 @@
 		};
 	};
 	const GENDER: Record<string, string> = { female: '女', male: '男' };
+
+	/** The four things a vendor can offer, as the phone lists them (实时 first). */
+	const OPTIONS = [
+		{
+			flag: 'asr', model: 'asrModel', label: '实时识别', description: '按住说话时边说边出字（手机上叫“实时”）',
+			hint: { dashscope: '如 qwen3-asr-flash-realtime', volcengine: '流式识别的资源 ID，如 volc.seedasr.sauc.duration' }
+		},
+		{
+			flag: 'asrFile', model: 'asrFileModel', label: '识别', description: '说完后整段识别（手机上叫“识别”，暂未接入）',
+			hint: { dashscope: '如 qwen3-asr-flash', volcengine: '录音文件识别极速版的资源 ID，如 volc.bigasr.auc_turbo' }
+		},
+		{
+			flag: 'ttsStream', model: 'ttsStreamModel', label: '实时播报', description: '边合成边播放，开口更快（手机上叫“实时”）',
+			hint: { dashscope: '如 qwen3-tts-flash-realtime；手机列出这个模型支持的音色', volcengine: 'seed-tts-2.0 或 seed-tts-1.0（双向流式）' }
+		},
+		{
+			flag: 'tts', model: 'ttsModel', label: '播报', description: '整段合成后播放（手机上叫“语音”）',
+			hint: { dashscope: '如 qwen3-tts-flash；手机只列出这个模型支持的音色', volcengine: 'seed-tts-2.0 或 seed-tts-1.0；手机只列出对应系列的音色' }
+		}
+	] as const;
 </script>
 
 <PageHeader title="语音" description="手机端的语音输入（语音转文字）和播报（文字转语音）。手机直接连厂商：千问由公司服务用成员的 Key 换一个几分钟就过期的临时令牌给手机，Key 不离开服务端；火山没有临时令牌，手机拿到的就是单独给 GL Work 建的 API Key，到期后重新取。成员的 Key 在“API Key”里录入并分配（建议用独立 Key，便于在厂商控制台分人核算）。">
@@ -134,20 +154,17 @@
 				{#if s}
 					<form method="POST" action="?/vendor" use:enhance={toastForm('已保存，手机下次打开设置时生效')} class="space-y-4">
 						<input type="hidden" name="id" value={v.id} />
-						<div class="flex items-center justify-between gap-4">
-							<div><Label for="asr-{v.id}">语音输入</Label><p class="text-muted-foreground text-xs">按住说话时实时识别成文字</p></div>
-							<Switch id="asr-{v.id}" name="asr" checked={s.asr} />
-						</div>
-						<Field label="识别模型" id="asrm-{v.id}" hint={v.protocol === 'dashscope' ? '实时识别模型，如 qwen3-asr-flash-realtime' : '流式识别的资源 ID，如 volc.seedasr.sauc.duration'}>
-							<Input id="asrm-{v.id}" name="asrModel" value={s.asrModel} class="font-mono" />
-						</Field>
-						<div class="flex items-center justify-between gap-4">
-							<div><Label for="tts-{v.id}">播报</Label><p class="text-muted-foreground text-xs">Agent 回复完成后朗读，成员在手机上选音色</p></div>
-							<Switch id="tts-{v.id}" name="tts" checked={s.tts} />
-						</div>
-						<Field label="合成模型" id="ttsm-{v.id}" hint={v.protocol === 'dashscope' ? '如 qwen3-tts-flash；手机只列出这个模型支持的音色' : 'seed-tts-2.0 或 seed-tts-1.0；手机只列出对应系列的音色'}>
-							<Input id="ttsm-{v.id}" name="ttsModel" value={s.ttsModel} class="font-mono" />
-						</Field>
+						{#each OPTIONS as o (o.flag)}
+							<div class="space-y-2 rounded-md border p-3">
+								<div class="flex items-center justify-between gap-4">
+									<div><Label for="{o.flag}-{v.id}">{o.label}</Label><p class="text-muted-foreground text-xs">{o.description}</p></div>
+									<Switch id="{o.flag}-{v.id}" name={o.flag} checked={s[o.flag]} />
+								</div>
+								<Field label="模型" id="{o.model}-{v.id}" hint={o.hint[v.protocol === 'dashscope' ? 'dashscope' : 'volcengine']}>
+									<Input id="{o.model}-{v.id}" name={o.model} value={s[o.model]} class="font-mono" />
+								</Field>
+							</div>
+						{/each}
 						<div class="flex justify-end"><Button type="submit" size="sm">保存</Button></div>
 					</form>
 				{/if}

@@ -12,7 +12,14 @@ export const actions: Actions = {
 		const id = text(form, 'id');
 		return act(async () => {
 			await getRuntime().admin.setVoiceSettings(actor(event), {
-				vendors: { [id]: { asr: form.get('asr') === 'on', asrModel: text(form, 'asrModel'), tts: form.get('tts') === 'on', ttsModel: text(form, 'ttsModel') } }
+				vendors: {
+					[id]: {
+						asr: form.get('asr') === 'on', asrModel: text(form, 'asrModel'),
+						asrFile: form.get('asrFile') === 'on', asrFileModel: text(form, 'asrFileModel'),
+						ttsStream: form.get('ttsStream') === 'on', ttsStreamModel: text(form, 'ttsStreamModel'),
+						tts: form.get('tts') === 'on', ttsModel: text(form, 'ttsModel')
+					}
+				}
 			});
 			return {};
 		});

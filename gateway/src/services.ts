@@ -533,7 +533,9 @@ export class AdminService {
     const before = JSON.stringify(await this.voiceStore.settings())
     const after = await this.voiceStore.setSettings(input)
     if (JSON.stringify(after) !== before) {
-      const vendors = Object.entries(after.vendors).map(([id, v]) => `${id} 识别${v.asr ? '开' : '关'}(${v.asrModel}) 播报${v.tts ? '开' : '关'}(${v.ttsModel})`)
+      const on = (flag: boolean, model: string) => `${flag ? '开' : '关'}(${model})`
+      const vendors = Object.entries(after.vendors).map(([id, v]) =>
+        `${id} 实时识别${on(v.asr, v.asrModel)} 识别${on(v.asrFile, v.asrFileModel)} 实时播报${on(v.ttsStream, v.ttsStreamModel)} 播报${on(v.tts, v.ttsModel)}`)
       await this.audit(actor, 'voice-settings', null, `${vendors.join('; ')}; 令牌 ${String(after.tokenTtlSeconds)} 秒, 每小时 ${String(after.tokensPerHour)} 次`)
     }
     return after

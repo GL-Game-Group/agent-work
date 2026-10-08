@@ -260,6 +260,26 @@ describe('语音 for phones', () => {
     assert.equal((await token('bob', 'qwen-voice')).status, 403)
   })
 
+  it('offers the four choices on their own switches, keeping the fields older phones read', async () => {
+    const before = await rt.admin.setVoiceSettings(admin, { vendors: { 'qwen-voice': { asr: false, tts: false }, 'volc-voice': { asr: false, tts: false } } })
+    // New switches start off with each vendor's default models.
+    assert.deepEqual(
+      [before.vendors['qwen-voice']?.asrFileModel, before.vendors['qwen-voice']?.ttsStreamModel, before.vendors['volc-voice']?.asrFileModel],
+      ['qwen3-asr-flash', 'qwen3-tts-flash-realtime', 'volc.bigasr.auc_turbo'])
+    // Only streaming read-aloud on: still offered, and a token is still given.
+    await rt.admin.setVoiceSettings(admin, { vendors: { 'qwen-voice': { ttsStream: true } } })
+    type Offered = { id: string; asr: unknown; asrFile: unknown; tts: unknown; ttsStream: { model: string; voices: { id: string }[] } | null }
+    const body = JSON.parse((await send(port, 'GET', '/agent-work/phone/voice', asPhone('alice'))).body) as { vendors: Offered[] }
+    const qwen = body.vendors.find(v => v.id === 'qwen-voice')
+    assert.deepEqual([qwen?.asr, qwen?.asrFile, qwen?.tts], [null, null, null])
+    // A realtime model speaks the voices its non-realtime sibling lists.
+    assert.deepEqual([qwen?.ttsStream?.model, qwen?.ttsStream?.voices.map(v => v.id)], ['qwen3-tts-flash-realtime', ['Cherry']])
+    assert.equal((await token('alice', 'qwen-voice')).status, 200)
+    await assert.rejects(async () => await rt.admin.setVoiceSettings(admin, { vendors: { 'qwen-voice': { ttsStreamModel: 'bad model' } } }), /模型名/u)
+    // Back to what the tests below expect.
+    await rt.admin.setVoiceSettings(admin, { vendors: { 'qwen-voice': { ttsStream: false, asr: true, tts: true }, 'volc-voice': { tts: true } } })
+  })
+
   it('shows phones only enabled voices: a voice 停用 is gone, 启用 again is back', async () => {
     const qwenVoices = async () => {
       const body = JSON.parse((await send(port, 'GET', '/agent-work/phone/voice', asPhone('alice'))).body) as { vendors: { id: string; tts: { voices: { id: string }[] } | null }[] }
