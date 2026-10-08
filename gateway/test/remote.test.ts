@@ -87,7 +87,7 @@ describe('手机远程', () => {
   // The Mac's events.mux: accept the handshake, then echo bytes.
   vhost.on('upgrade', (req, socket) => {
     const accept = createHash('sha1').update(`${String(req.headers['sec-websocket-key'])}258EAFA5-E914-47DA-95CA-C5AB0DC11B85`).digest('base64')
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nX-Seen-Host: ${String(req.headers.host)}\r\nX-Seen-Auth: ${String(req.headers.authorization ?? 'none')}\r\n\r\n`)
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nX-Seen-Host: ${String(req.headers.host)}\r\nX-Seen-Auth: ${String(req.headers.authorization ?? 'none')}\r\nX-Seen-Path: ${String(req.url)}\r\n\r\n`)
     socket.pipe(socket)
   })
   let rt: Runtime
@@ -256,6 +256,47 @@ describe('手机远程', () => {
       refused.socket.destroy()
     }
     assert.equal((await store.recentAudit()).filter(e => e.action === 'remote-connect').length, 1)
+  })
+
+  it('relays an Orca pairing request and Orca\'s WebSocket to the phone\'s own Mac only', async () => {
+    const alice = (await rt.tunnels.list('alice')).find(t => t.type === 'remote')
+    const bob = (await rt.tunnels.list('bob')).find(t => t.type === 'remote')
+    assert.ok(alice !== undefined && bob !== undefined)
+    const headers = { 'authorization': `Bearer ${phone.alice as string}`, 'content-type': 'application/json', 'cookie': 'x=1' }
+    const pair = await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/pair`, headers, '{"deviceName":"iPhone"}')
+    assert.equal(pair.status, 200)
+    assert.deepEqual(seen.at(-1), { host: alice.host, path: '/glwork/remote/pair', authorization: undefined, cookie: undefined, body: '{"deviceName":"iPhone"}' })
+    assert.equal((await store.recentAudit()).filter(e => e.action === 'remote-pair').length, 1)
+    const before = seen.length
+    // Someone else's Mac, a desktop token, no token, the wrong verb, other paths under orca/.
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${bob.id}/orca/pair`, headers, '{}')).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/pair`, { authorization: `Bearer ${device.alice?.token as string}` }, '{}')).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/pair`, { 'content-type': 'application/json' }, '{}')).status, 401)
+    assert.equal((await send(port, 'GET', `/agent-work/remote/${alice.id}/orca/pair`, headers)).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca`, headers, '{}')).status, 404)
+    assert.equal((await send(port, 'POST', `/agent-work/remote/${alice.id}/orca/auth/github/device`, headers, '{}')).status, 403)
+    assert.equal(seen.length, before)
+
+    const ws = await upgrade(port, `/agent-work/remote/${alice.id}/orca`, { Authorization: `Bearer ${phone.alice as string}` })
+    assert.match(ws.head, /^HTTP\/1\.1 101/u)
+    assert.match(ws.head, new RegExp(`X-Seen-Host: ${alice.host as string}`, 'u'))
+    assert.match(ws.head, /X-Seen-Auth: none/u)
+    assert.match(ws.head, /X-Seen-Path: \/\r?$/mu)
+    const echoed = new Promise<string>((resolve) => { ws.socket.once('data', (chunk: Buffer) => { resolve(chunk.toString()) }) })
+    ws.socket.write('sealed bytes')
+    assert.equal(await echoed, 'sealed bytes')
+    ws.socket.destroy()
+    for (const [path, auth, status] of [
+      [`/agent-work/remote/${bob.id}/orca`, phone.alice, 404],
+      [`/agent-work/remote/${alice.id}/orca`, device.alice?.token, 401],
+      [`/agent-work/remote/${alice.id}/orca`, 'awp_forged', 401],
+      [`/agent-work/remote/${alice.id}/orca/pair`, phone.alice, 404],
+      [`/agent-work/remote/${alice.id}/orca/x`, phone.alice, 404],
+    ] as const) {
+      const refused = await upgrade(port, path, { Authorization: `Bearer ${String(auth)}` })
+      assert.match(refused.head, new RegExp(`^HTTP/1\\.1 ${String(status)}`, 'u'), path)
+      refused.socket.destroy()
+    }
   })
 
   it('stops relaying when the administrator closes it, the Mac goes away, or the phone is revoked', async () => {

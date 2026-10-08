@@ -3,8 +3,9 @@
  * passed to frps's HTTP port on the internal network under the Mac's
  * `remote` tunnel name (tunnels.ts), where the Mac's frpc picks them up.
  *
- * Only what the remote protocol needs crosses: POST /api/<method> and the
- * /api/events.mux WebSocket. The phone's own credential never does, nor any
+ * Only what the remote protocols need crosses: for GL Work on DSH, POST
+ * /api/<method> and the /api/events.mux WebSocket; for GL Work on Orca, the
+ * pairing request and Orca's end-to-end encrypted WebSocket. The phone's own credential never does, nor any
  * other header the Mac does not read.
  */
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -24,8 +25,8 @@ export interface RemoteHop {
   host: string
 }
 
-/** POST /api/<method> to the Mac; its answer goes back as is. */
-export function relayRequest(req: IncomingMessage, res: ServerResponse, hop: RemoteHop, method: string, headers: Record<string, string>): Promise<void> {
+/** POST `path` (`/api/<method>`, `/glwork/remote/pair`) to the Mac; its answer goes back as is. */
+export function relayRequest(req: IncomingMessage, res: ServerResponse, hop: RemoteHop, path: string, headers: Record<string, string>): Promise<void> {
   return new Promise((resolve) => {
     const length = Number(req.headers['content-length'] ?? 'NaN')
     if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
@@ -35,7 +36,7 @@ export function relayRequest(req: IncomingMessage, res: ServerResponse, hop: Rem
       return
     }
     const upstream = httpRequest({
-      host: hop.vhost.host, port: hop.vhost.port, method: 'POST', path: `/api/${method}`,
+      host: hop.vhost.host, port: hop.vhost.port, method: 'POST', path,
       headers: {
         'host': hop.host,
         'content-type': req.headers['content-type'] ?? 'application/json',
@@ -89,16 +90,16 @@ export function refuseUpgrade(socket: Duplex, status: number, error: string): vo
 const WS_HEADERS = ['sec-websocket-key', 'sec-websocket-version', 'sec-websocket-protocol', 'sec-websocket-extensions'] as const
 
 /**
- * GET /api/events.mux as a WebSocket to the Mac: the handshake is replayed
+ * A WebSocket to the Mac at `path` (`/api/events.mux`, or `/` for Orca): the handshake is replayed
  * with only the WebSocket headers, then bytes pass both ways untouched.
  * @returns a function that closes both sides (for revocation).
  */
-export function relayUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, hop: RemoteHop): () => void {
+export function relayUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer, hop: RemoteHop, path: string): () => void {
   const upstream = connect(hop.vhost.port, hop.vhost.host)
   const close = () => { upstream.destroy(); socket.destroy() }
   upstream.setNoDelay(true)
   upstream.on('connect', () => {
-    const lines = ['GET /api/events.mux HTTP/1.1', `Host: ${hop.host}`, 'Upgrade: websocket', 'Connection: Upgrade']
+    const lines = [`GET ${path} HTTP/1.1`, `Host: ${hop.host}`, 'Upgrade: websocket', 'Connection: Upgrade']
     for (const name of WS_HEADERS) {
       const value = req.headers[name]
       if (typeof value === 'string' && !/[\r\n]/u.test(value)) lines.push(`${name}: ${value}`)

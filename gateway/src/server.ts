@@ -59,6 +59,10 @@ const FRP_PLUGIN = /^\/agent-work\/frp\/([^/]{1,128})$/u
 const SYSTEM_CONFIG = /^\/agent-work\/config\/system(?:\/([A-Za-z][A-Za-z0-9_.-]{0,63}))?$/u
 /** 手机远程: /agent-work/remote/<tunnel id>/api/<method> (`session.list`, or a Host namespace's `fileReferences/list`). */
 const REMOTE = /^\/agent-work\/remote\/(tun_[A-Za-z0-9]{1,32})\/api\/([^/]{1,64}(?:\/[^/]{1,64})?)$/u
+/** GL Work on Orca: /agent-work/remote/<tunnel id>/orca (Orca's encrypted WebSocket) and …/orca/pair (a pairing for this phone). */
+const REMOTE_ORCA = /^\/agent-work\/remote\/(tun_[A-Za-z0-9]{1,32})\/orca(\/pair)?$/u
+/** Where the Mac's GL Work answers a relayed pairing request. */
+const ORCA_PAIR_PATH = '/glwork/remote/pair'
 /** Where the phone app's sign-in returns (ASWebAuthenticationSession's callback scheme). */
 const PHONE_REDIRECT = 'glwork://auth'
 
@@ -686,9 +690,12 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       default:
     }
     const remote = REMOTE.exec(url.pathname)
-    if (remote === null) { json(res, 403, { error: 'phone_not_allowed' }); return }
-    const [, id = '', method = ''] = remote
-    if (req.method !== 'POST' || !REMOTE_METHOD.test(method)) { json(res, 404, { error: 'not_found' }); return }
+    const orca = remote === null ? REMOTE_ORCA.exec(url.pathname) : null
+    if (remote === null && orca === null) { json(res, 403, { error: 'phone_not_allowed' }); return }
+    const [, id = '', method = ''] = remote ?? orca ?? []
+    // Orca's WebSocket is an upgrade (below); over plain HTTP only its pairing request crosses.
+    const allowed = remote !== null ? REMOTE_METHOD.test(method) : orca?.[2] === '/pair'
+    if (req.method !== 'POST' || !allowed) { json(res, 404, { error: 'not_found' }); return }
     const vhost = config.frps?.vhost ?? null
     if (vhost === null) { json(res, 503, { error: '公司服务没有配置手机远程' }); return }
     let host: string
@@ -699,29 +706,37 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       json(res, error.status, { error: error.message })
       return
     }
+    if (orca !== null) {
+      await audit(req, member.name, 'remote-pair', id, credential.label)
+      await relayRequest(req, res, { vhost, host }, ORCA_PAIR_PATH, SECURITY_HEADERS)
+      return
+    }
     if (method === 'session.prompt' || method === 'respond') await audit(req, member.name, `remote-${method === 'respond' ? 'respond' : 'prompt'}`, id, credential.label)
-    await relayRequest(req, res, { vhost, host }, method, SECURITY_HEADERS)
+    await relayRequest(req, res, { vhost, host }, `/api/${method}`, SECURITY_HEADERS)
   }
 
-  /** The remote protocol's live events: GET /agent-work/remote/<id>/api/events.mux as a WebSocket. */
+  /** The remote protocols' WebSockets: …/api/events.mux (DSH) and …/orca (Orca), from the phone to its member's Mac. */
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean {
     const url = new URL(req.url ?? '/', config.publicOrigin)
     if (!url.pathname.startsWith(`${PREFIX}remote/`)) return false
     socket.on('error', () => { socket.destroy() })
     const remote = REMOTE.exec(url.pathname)
-    if (req.method !== 'GET' || remote === null || remote[2] !== 'events.mux' || req.headers.upgrade?.toLowerCase() !== 'websocket') {
+    const orca = REMOTE_ORCA.exec(url.pathname)
+    const target = remote !== null && remote[2] === 'events.mux' ? { id: remote[1] as string, path: '/api/events.mux' }
+      : orca !== null && orca[2] === undefined ? { id: orca[1] as string, path: '/' } : null
+    if (req.method !== 'GET' || target === null || req.headers.upgrade?.toLowerCase() !== 'websocket') {
       refuseUpgrade(socket, 404, 'not_found')
       return true
     }
     // The path is the service's: the rest is checked against the database, then relayed or refused.
-    connectRemote(req, socket, head, remote[1] as string).catch((error: unknown) => {
+    connectRemote(req, socket, head, target.id, target.path).catch((error: unknown) => {
       console.error('gateway: remote upgrade failed', error)
       refuseUpgrade(socket, 500, 'internal')
     })
     return true
   }
 
-  async function connectRemote(req: IncomingMessage, socket: Duplex, head: Buffer, id: string): Promise<void> {
+  async function connectRemote(req: IncomingMessage, socket: Duplex, head: Buffer, id: string, path: string): Promise<void> {
     await ready
     const authorization = req.headers.authorization ?? ''
     const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : ''
@@ -739,7 +754,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
     }
     await audit(req, principal.member.name, 'remote-connect', id, principal.credential.label)
     if (socket.destroyed) return
-    const close = relayUpgrade(req, socket, head, { vhost, host })
+    const close = relayUpgrade(req, socket, head, { vhost, host }, path)
     // A phone signed out or revoked, or 手机远程 closed, ends the stream within a minute.
     const recheck = setInterval(() => {
       void (async () => {
