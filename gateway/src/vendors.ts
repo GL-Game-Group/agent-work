@@ -341,8 +341,11 @@ export class Vendors {
     const vendor = await this.mustVendor(vendorId)
     if (vendor.auth !== 'key') throw new Refusal(400, `${vendor.name} 使用账号登录，请到订阅与账号里添加`)
     if (mode !== 'shared' && mode !== 'dedicated') throw new Refusal(400, 'Key 类型只能是共享或独立')
-    const plain = typeof secret === 'string' ? secret.trim() : ''
-    if (plain.length < 8 || plain.length > 512 || /\s/u.test(plain)) throw new Refusal(400, '请填写完整的 API Key')
+    // No vendor's key holds whitespace: drop any a paste brought along (line breaks, NBSP, zero-width).
+    const plain = typeof secret === 'string' ? secret.replace(/[\s\u200b-\u200d\u2060\ufeff]/gu, '') : ''
+    if (plain.length === 0) throw new Refusal(400, '请填写 API Key')
+    if (plain.length < 8) throw new Refusal(400, `API Key 太短（${String(plain.length)} 个字符），请检查是否复制完整`)
+    if (plain.length > 512) throw new Refusal(400, 'API Key 太长（超过 512 个字符），请检查是否多复制了内容')
     if (vendor.protocol === 'volcengine' && volcengineApiKey(plain) === undefined) {
       throw new Refusal(400, '火山语音请填写新版控制台的 API Key（豆包语音 → API Key），不是旧版的 APP ID:Access Token')
     }

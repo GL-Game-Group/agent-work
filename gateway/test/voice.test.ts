@@ -162,8 +162,12 @@ describe('语音 for phones', () => {
   it('takes a Volcengine key only as the new console\'s API Key', async () => {
     // The old console's app id and access token are refused, with where to find the right key.
     await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: '6123456789:volc-access-token-0001', mode: 'dedicated' }), /新版控制台的 API Key/u)
-    await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: 'two words', mode: 'dedicated' }), /完整的 API Key/u)
-    await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'alice 火山', key: 'volc-api-key-0001', mode: 'dedicated', member: 'alice' })
+    await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: ' ab cd\n', mode: 'dedicated' }), /太短（4 个字符）/u)
+    await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: 'k'.repeat(513), mode: 'dedicated' }), /太长/u)
+    // A paste's line break, no-break space and zero-width space are dropped: the key works as typed
+    // (the token test below gets "volc-api-key-0001" back, and the sample synthesis sends it).
+    await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'alice 火山', key: ' volc-api-\nkey-\u00a00001\u200b ', mode: 'dedicated', member: 'alice' })
+    assert.equal((await rt.admin.keys()).find(k => k.vendor === 'volc-voice')?.last4, '0001')
   })
 
   it('fetches the official voice lists; later new voices wait for an administrator; a changed page changes nothing', async () => {
