@@ -113,6 +113,8 @@ export async function copySqlite(source: DatabaseSync, target: Sql, options: { f
         await tx.query(`select setval(pg_get_serial_sequence('${table.name}', '${table.rowid}'), coalesce(max(${table.rowid}), 0) + 1, false) from ${table.name}`)
       }
     }
+    // voice_catalog.state is newer than any SQLite file: derive it as schema step 3 does.
+    await tx.run(`update voice_catalog set state = case when enabled = 1 then 'enabled' else 'available' end`)
     // A v7 file has no voice vendors yet: add them as SQLite's v8 step would have.
     if (version === 7) {
       const now = (options.now ?? Date.now)()

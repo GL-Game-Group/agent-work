@@ -550,10 +550,11 @@ export class AdminService {
     return this.voiceStore.sample(vendor, voice, this.fetch)
   }
 
-  async setEnabledVoices(actor: Actor, vendor: string, ids: unknown): Promise<number> {
-    const count = await this.voiceStore.setEnabledVoices(vendor, ids)
-    await this.audit(actor, 'voice-voices', vendor, `${String(count)} voices shown`)
-    return count
+  /** Add a voice to what members can pick, hide it for now, or show it again. */
+  async setVoiceState(actor: Actor, vendor: string, voice: unknown, state: unknown) {
+    const entry = await this.voiceStore.setVoiceState(vendor, voice, state)
+    await this.audit(actor, 'voice-voices', vendor, `${entry.id} ${entry.state}`)
+    return entry
   }
 
   /** Every tunnel with its owner's device, the domains, the settings, and who may open which kind. */

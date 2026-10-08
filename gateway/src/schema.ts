@@ -5,6 +5,10 @@
  * subscriptions, system config, plugins, tunnels, voice). Later changes add a
  * step; a step never changes once released:
  * - 2: `tunnels.client`, which GL Work registered a 手机远程 tunnel (null: the DSH desktop).
+ * - 3: `voice_catalog.state`: a voice is `available` (on the official list only), `enabled`
+ *   (members see it) or `disabled` (added, hidden for now). Voices shown so far become
+ *   `enabled`, the others `available`. `enabled` stays, written in step with `state`, so an
+ *   older service still reads which voices members see.
  *
  * - Millisecond timestamps, GitHub ids and token counts are `bigint`; 0/1 flags stay `integer`.
  * - Every text column uses the "C" collation: comparisons and `order by` go by
@@ -265,6 +269,12 @@ const STEPS: Step[] = [
     },
   },
   { sql: `alter table tunnels add column client ${T}` },
+  {
+    sql: `
+alter table voice_catalog add column state ${T} not null default 'available' check (state in ('available', 'enabled', 'disabled'));
+update voice_catalog set state = case when enabled = 1 then 'enabled' else 'available' end;
+`,
+  },
 ]
 
 export const SCHEMA_VERSION = STEPS.length

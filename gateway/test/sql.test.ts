@@ -88,6 +88,16 @@ function behaves(name: string, open: () => Promise<{ sql: Sql; stop: () => Promi
       const vendors = await sql.query<{ id: string }>('select id from vendors order by builtin desc, created_at, seq')
       assert.deepEqual(vendors.map(v => v.id), ['codex', 'claude', 'qoder', 'qwen', 'deepseek', 'qwen-voice', 'volc-voice'])
     })
+
+    it('step 3: voices shown so far become enabled, the others available; enabled stays for an older service', async () => {
+      // Back to step 2, with a voice list as it stood then.
+      await sql.exec('delete from schema_version where version >= 3; alter table voice_catalog drop column state')
+      await sql.run(`insert into voice_catalog (vendor, id, name, models, enabled, position, updated_at)
+        values ('qwen-voice', 'Cherry', '芊悦', '[]', 1, 0, 0), ('qwen-voice', 'Ethan', '晨煦', '[]', 0, 1, 0)`)
+      assert.equal(await migrate(sql), 2)
+      const rows = await sql.query<{ id: string; state: string; enabled: number }>('select id, state, enabled from voice_catalog order by position')
+      assert.deepEqual(rows.map(r => [r.id, r.state, r.enabled]), [['Cherry', 'enabled', 1], ['Ethan', 'available', 0]])
+    })
   })
 }
 

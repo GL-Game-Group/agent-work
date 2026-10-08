@@ -170,18 +170,32 @@ describe('语音 for phones', () => {
     assert.equal((await rt.admin.keys()).find(k => k.vendor === 'volc-voice')?.last4, '0001')
   })
 
-  it('fetches the official voice lists; later new voices wait for an administrator; a changed page changes nothing', async () => {
+  it('fetches the official voice lists, all of them waiting to be added; a refresh keeps each voice\'s state; a changed page changes nothing', async () => {
+    const states = async (vendor: string) => (await rt.admin.voice()).voices.filter(v => v.vendor === vendor).map(v => [v.id, v.state])
     assert.deepEqual(await rt.admin.refreshVoices(admin, 'qwen-voice'), { voices: 2, added: 2 })
-    assert.deepEqual((await rt.admin.voice()).voices.filter(v => v.vendor === 'qwen-voice').map(v => [v.id, v.enabled]), [['Cherry', true], ['Ethan', true]])
-    await rt.admin.setEnabledVoices(admin, 'qwen-voice', ['Cherry'])
+    assert.deepEqual(await states('qwen-voice'), [['Cherry', 'available'], ['Ethan', 'available']])
+    // 添加 Cherry and Ethan, then 停用 Ethan.
+    assert.equal((await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'enabled')).state, 'enabled')
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Ethan', 'enabled')
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Ethan', 'disabled')
     page = dashscopePage(['Cherry', 'Ethan', 'Serena'])
     assert.deepEqual(await rt.admin.refreshVoices(admin, 'qwen-voice'), { voices: 3, added: 1 })
-    assert.deepEqual((await rt.admin.voice()).voices.filter(v => v.vendor === 'qwen-voice').map(v => [v.id, v.enabled]), [['Cherry', true], ['Ethan', false], ['Serena', false]])
+    assert.deepEqual(await states('qwen-voice'), [['Cherry', 'enabled'], ['Ethan', 'disabled'], ['Serena', 'available']])
     page = '<html>改版了</html>'
     await assert.rejects(rt.admin.refreshVoices(admin, 'qwen-voice'), /改版/u)
-    assert.equal((await rt.admin.voice()).voices.filter(v => v.vendor === 'qwen-voice').length, 3)
+    assert.equal((await states('qwen-voice')).length, 3)
     await rt.admin.refreshVoices(admin, 'volc-voice')
-    assert.equal((await rt.admin.voice()).voices.filter(v => v.vendor === 'volc-voice').length, 3)
+    assert.equal((await states('volc-voice')).length, 3)
+    for (const [id] of await states('volc-voice')) await rt.admin.setVoiceState(admin, 'volc-voice', id ?? '', 'enabled')
+  })
+
+  it('changes one voice at a time: add, hide, show again; never back to only listed', async () => {
+    await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'Serena', 'on'), /启用或停用/u)
+    await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'nobody', 'enabled'), /没有音色/u)
+    await assert.rejects(rt.admin.setVoiceState(admin, 'deepseek', 'Cherry', 'enabled'), /没有语音厂商/u)
+    await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'Ethan', 'available'), /只能启用或停用/u)
+    const audit = (await store.recentAudit(20)).filter(e => e.action === 'voice-voices').map(e => e.detail)
+    assert.ok(audit.includes('Ethan disabled') && audit.includes('Cherry enabled'), JSON.stringify(audit))
   })
 
   it('plays samples for the console: the official one, or a sentence synthesized with a company key', async () => {
@@ -226,6 +240,17 @@ describe('语音 for phones', () => {
     const bob = JSON.parse((await send(port, 'GET', '/agent-work/phone/voice', asPhone('bob'))).body) as { vendors: unknown[] }
     assert.deepEqual(bob.vendors, [])
     assert.equal((await token('bob', 'qwen-voice')).status, 403)
+  })
+
+  it('shows phones only enabled voices: a voice 停用 is gone, 启用 again is back', async () => {
+    const qwenVoices = async () => {
+      const body = JSON.parse((await send(port, 'GET', '/agent-work/phone/voice', asPhone('alice'))).body) as { vendors: { id: string; tts: { voices: { id: string }[] } | null }[] }
+      return body.vendors.find(v => v.id === 'qwen-voice')?.tts?.voices.map(v => v.id)
+    }
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'disabled')
+    assert.deepEqual(await qwenVoices(), [])
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'enabled')
+    assert.deepEqual(await qwenVoices(), ['Cherry'])
   })
 
   it('trades 千问\'s key for a temporary token; hands out 火山\'s API Key, to be asked for again after the expiry', async () => {

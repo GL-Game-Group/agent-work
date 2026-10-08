@@ -28,10 +28,8 @@ export const actions: Actions = {
 		const form = await event.request.formData();
 		return act(async () => getRuntime().admin.refreshVoices(actor(event), text(form, 'vendor')));
 	},
-	voices: async (event) => {
+	voice: async (event) => {
 		const form = await event.request.formData();
-		let ids: unknown;
-		try { ids = JSON.parse(text(form, 'ids')); } catch { ids = null; }
-		return act(async () => ({ count: await getRuntime().admin.setEnabledVoices(actor(event), text(form, 'vendor'), ids) }));
+		return act(async () => ({ state: (await getRuntime().admin.setVoiceState(actor(event), text(form, 'vendor'), text(form, 'id'), text(form, 'state'))).state }));
 	}
 };

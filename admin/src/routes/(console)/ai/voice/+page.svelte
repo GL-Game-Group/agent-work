@@ -8,7 +8,6 @@
 	import { Switch } from '#lib/components/ui/switch/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
-	import { Checkbox } from '#lib/components/ui/checkbox/index.js';
 	import PageHeader from '#lib/components/app/page-header.svelte';
 	import Field from '#lib/components/app/field.svelte';
 	import Choice from '#lib/components/app/choice.svelte';
@@ -24,11 +23,6 @@
 	let { data } = $props();
 	type VoiceRow = (typeof data.voices)[number];
 
-	// Which voices members see, per vendor, as edited here until saved.
-	// Reset from the server's list whenever it reloads (after a save or an update from the vendors).
-	let chosen = $derived<Record<string, string[]>>(
-		Object.fromEntries(data.vendors.map((v) => [v.id, data.voices.filter((x) => x.vendor === v.id && x.enabled).map((x) => x.id)]))
-	);
 	let tab = $state('qwen-voice');
 	let query = $state('');
 	let family = $state('all');
@@ -36,15 +30,19 @@
 	const rowsOf = (vendor: string) =>
 		data.voices.filter((v) => v.vendor === vendor && (family === 'all' || v.family === family) &&
 			`${v.id} ${v.name} ${v.description ?? ''} ${v.languages ?? ''}`.toLowerCase().includes(query.toLowerCase()));
-	function toggle(vendor: string, id: string, on: boolean) {
-		const list = chosen[vendor] ?? [];
-		chosen[vendor] = on ? [...new Set([...list, id])] : list.filter((x) => x !== id);
-	}
-	function setAll(vendor: string, rows: VoiceRow[], on: boolean) {
-		const ids = new Set(rows.map((r) => r.id));
-		const list = (chosen[vendor] ?? []).filter((x) => !ids.has(x));
-		chosen[vendor] = on ? [...list, ...ids] : list;
-	}
+	// 已添加: what members can pick (启用) or have had hidden for now (停用).
+	const addedOf = (vendor: string) => data.voices.filter((v) => v.vendor === vendor && v.state !== 'available');
+	const shownOf = (vendor: string) => data.voices.filter((v) => v.vendor === vendor && v.state === 'enabled').length;
+	// The row whose 添加 / 停用 / 启用 is on its way: one at a time.
+	let changing = $state<string | null>(null);
+	const change = (verb: string): SubmitFunction => ({ formData }) => {
+		changing = `${String(formData.get('vendor'))}/${String(formData.get('id'))}`;
+		const after = toastResult(`已${verb}`);
+		return async (opts) => {
+			await after(opts);
+			changing = null;
+		};
+	};
 
 	// Samples, from the console itself: one plays at a time.
 	let playing = $state<string | null>(null);
@@ -124,21 +122,46 @@
 	{/each}
 </div>
 
+{#snippet voiceCell(r: VoiceRow)}
+	<div class="font-medium">{r.name}{#if r.gender}<span class="text-muted-foreground ml-1 text-xs">{GENDER[r.gender]}</span>{/if}</div>
+	<div class="text-muted-foreground font-mono text-xs">{r.id}</div>
+{/snippet}
+{#snippet aboutCells(r: VoiceRow)}
+	<Table.Cell class="text-muted-foreground max-w-64 text-xs whitespace-normal">{r.description ?? ''}{#if family === 'all' && r.family}<div class="opacity-70">{r.family}</div>{/if}</Table.Cell>
+	<Table.Cell class="text-muted-foreground max-w-48 truncate text-xs" title={r.languages ?? ''}>{r.languages ?? ''}</Table.Cell>
+{/snippet}
+{#snippet playCell(r: VoiceRow)}
+	<Table.Cell>
+		<Button variant="ghost" size="icon-sm" onclick={() => play(r)} aria-label="试听 {r.name}" title={r.sampleUrl ? '官方试听' : '用已录入的 Key 现场合成一句'}>
+			{#if loading === r.id}<Loader class="animate-spin" />{:else if playing === r.id}<Square />{:else}<Play />{/if}
+		</Button>
+	</Table.Cell>
+{/snippet}
+{#snippet stateButton(r: VoiceRow, state: 'enabled' | 'disabled', verb: string, variant: 'default' | 'outline')}
+	<form method="POST" action="?/voice" use:enhance={change(verb)}>
+		<input type="hidden" name="vendor" value={r.vendor} />
+		<input type="hidden" name="id" value={r.id} />
+		<input type="hidden" name="state" value={state} />
+		<Button type="submit" size="sm" {variant} disabled={changing !== null} data-action="voice-{verb}">{verb}</Button>
+	</form>
+{/snippet}
+
 <Card.Root class="mt-4">
 	<Card.Header>
 		<Card.Title>音色</Card.Title>
-		<Card.Description>从两家官方的音色列表读取。勾选的音色才会出现在成员手机上；千问播放官方试听；火山没有官方试听，用已录入的 Key 现场合成一句（合成过的会缓存）。</Card.Description>
+		<Card.Description>从两家官方的音色列表读取。在“官方音色”里点“添加”，音色就出现在成员手机上；已添加的可以停用（成员暂时看不到），停用的可以重新启用。千问播放官方试听；火山没有官方试听，用已录入的 Key 现场合成一句（合成过的会缓存）。</Card.Description>
 	</Card.Header>
 	<Card.Content>
 		<Tabs.Root bind:value={tab} onValueChange={() => { query = ''; family = 'all'; }}>
 			<Tabs.List>
 				{#each data.vendors as v (v.id)}
-					<Tabs.Trigger value={v.id}>{v.name}（{(chosen[v.id] ?? []).length}/{data.voices.filter((x) => x.vendor === v.id).length}）</Tabs.Trigger>
+					<Tabs.Trigger value={v.id}>{v.name}（启用 {shownOf(v.id)} / 已添加 {addedOf(v.id).length}）</Tabs.Trigger>
 				{/each}
 			</Tabs.List>
 			{#each data.vendors as v (v.id)}
 				{@const rows = rowsOf(v.id)}
-				<Tabs.Content value={v.id} class="space-y-3 pt-2">
+				{@const added = rows.filter((r) => r.state !== 'available')}
+				<Tabs.Content value={v.id} class="space-y-4 pt-2">
 					<div class="flex flex-wrap items-center gap-2">
 						<div class="relative min-w-48 flex-1">
 							<Search class="text-muted-foreground absolute top-2.5 left-2.5 size-4" />
@@ -153,46 +176,77 @@
 						</form>
 						<span class="text-muted-foreground text-xs">{v.catalogAt ? `${relative(v.catalogAt)}更新` : '还没有读取过'}</span>
 					</div>
-					{#if rows.length > 0}
-						<div class="max-h-[32rem] overflow-y-auto rounded-md border">
-							<Table.Root>
-								<Table.Header>
-									<Table.Row>
-										<Table.Head class="w-10"><Checkbox checked={rows.every((r) => (chosen[v.id] ?? []).includes(r.id))} onCheckedChange={(on) => setAll(v.id, rows, on === true)} aria-label="全选" /></Table.Head>
-										<Table.Head>音色</Table.Head>
-										<Table.Head>描述</Table.Head>
-										<Table.Head>语种</Table.Head>
-										<Table.Head class="w-16">试听</Table.Head>
-									</Table.Row>
-								</Table.Header>
-								<Table.Body>
-									{#each rows as r (r.id)}
-										<Table.Row>
-											<Table.Cell><Checkbox checked={(chosen[v.id] ?? []).includes(r.id)} onCheckedChange={(on) => toggle(v.id, r.id, on === true)} aria-label={r.name} /></Table.Cell>
-											<Table.Cell>
-												<div class="font-medium">{r.name}{#if r.gender}<span class="text-muted-foreground ml-1 text-xs">{GENDER[r.gender]}</span>{/if}</div>
-												<div class="text-muted-foreground font-mono text-xs">{r.id}</div>
-											</Table.Cell>
-											<Table.Cell class="text-muted-foreground max-w-64 text-xs whitespace-normal">{r.description ?? ''}{#if family === 'all' && r.family}<div class="opacity-70">{r.family}</div>{/if}</Table.Cell>
-											<Table.Cell class="text-muted-foreground max-w-48 truncate text-xs" title={r.languages ?? ''}>{r.languages ?? ''}</Table.Cell>
-											<Table.Cell>
-												<Button variant="ghost" size="icon-sm" onclick={() => play(r)} aria-label="试听 {r.name}" title={r.sampleUrl ? '官方试听' : '用已录入的 Key 现场合成一句'}>
-													{#if loading === r.id}<Loader class="animate-spin" />{:else if playing === r.id}<Square />{:else}<Play />{/if}
-												</Button>
-											</Table.Cell>
-										</Table.Row>
-									{/each}
-								</Table.Body>
-							</Table.Root>
-						</div>
-						<form method="POST" action="?/voices" use:enhance={toastForm((d) => `已开放 ${String(d?.count ?? 0)} 个音色`)} class="flex items-center justify-end gap-3">
-							<input type="hidden" name="vendor" value={v.id} />
-							<input type="hidden" name="ids" value={JSON.stringify(chosen[v.id] ?? [])} />
-							<span class="text-muted-foreground text-sm">已勾选 {(chosen[v.id] ?? []).length} 个</span>
-							<Button type="submit">保存音色</Button>
-						</form>
+					{#if data.voices.some((x) => x.vendor === v.id)}
+						<section class="space-y-2" data-voice-section="added">
+							<h3 class="text-sm font-medium">已添加（{addedOf(v.id).length}）<span class="text-muted-foreground ml-2 text-xs font-normal">启用的出现在成员手机上</span></h3>
+							{#if added.length > 0}
+								<div class="max-h-[24rem] overflow-y-auto rounded-md border">
+									<Table.Root>
+										<Table.Header>
+											<Table.Row>
+												<Table.Head>音色</Table.Head>
+												<Table.Head>描述</Table.Head>
+												<Table.Head>语种</Table.Head>
+												<Table.Head class="w-20">状态</Table.Head>
+												<Table.Head class="w-20">操作</Table.Head>
+												<Table.Head class="w-16">试听</Table.Head>
+											</Table.Row>
+										</Table.Header>
+										<Table.Body>
+											{#each added as r (r.id)}
+												<Table.Row data-voice={r.id}>
+													<Table.Cell>{@render voiceCell(r)}</Table.Cell>
+													{@render aboutCells(r)}
+													<Table.Cell>
+														{#if r.state === 'enabled'}<Badge variant="secondary">启用</Badge>{:else}<Badge variant="outline" class="text-muted-foreground">停用</Badge>{/if}
+													</Table.Cell>
+													<Table.Cell>
+														{#if r.state === 'enabled'}{@render stateButton(r, 'disabled', '停用', 'outline')}{:else}{@render stateButton(r, 'enabled', '启用', 'default')}{/if}
+													</Table.Cell>
+													{@render playCell(r)}
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
+							{:else}
+								<p class="text-muted-foreground rounded-md border p-4 text-center text-sm">{addedOf(v.id).length === 0 ? '还没有添加音色：在下面的官方音色里点“添加”' : '没有匹配的已添加音色'}</p>
+							{/if}
+						</section>
+						<section class="space-y-2" data-voice-section="official">
+							<h3 class="text-sm font-medium">官方音色（{rows.length}）</h3>
+							{#if rows.length > 0}
+								<div class="max-h-[32rem] overflow-y-auto rounded-md border">
+									<Table.Root>
+										<Table.Header>
+											<Table.Row>
+												<Table.Head>音色</Table.Head>
+												<Table.Head>描述</Table.Head>
+												<Table.Head>语种</Table.Head>
+												<Table.Head class="w-20">操作</Table.Head>
+												<Table.Head class="w-16">试听</Table.Head>
+											</Table.Row>
+										</Table.Header>
+										<Table.Body>
+											{#each rows as r (r.id)}
+												<Table.Row data-voice={r.id}>
+													<Table.Cell>{@render voiceCell(r)}</Table.Cell>
+													{@render aboutCells(r)}
+													<Table.Cell>
+														{#if r.state === 'available'}{@render stateButton(r, 'enabled', '添加', 'outline')}{:else}<span class="text-muted-foreground text-xs">已添加</span>{/if}
+													</Table.Cell>
+													{@render playCell(r)}
+												</Table.Row>
+											{/each}
+										</Table.Body>
+									</Table.Root>
+								</div>
+							{:else}
+								<p class="text-muted-foreground rounded-md border p-4 text-center text-sm">没有匹配的音色</p>
+							{/if}
+						</section>
 					{:else}
-						<p class="text-muted-foreground p-6 text-center text-sm">{data.voices.some((x) => x.vendor === v.id) ? '没有匹配的音色' : '点“从官方更新”读取音色列表'}</p>
+						<p class="text-muted-foreground p-6 text-center text-sm">点“从官方更新”读取音色列表</p>
 					{/if}
 				</Tabs.Content>
 			{/each}

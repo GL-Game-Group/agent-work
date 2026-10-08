@@ -52,6 +52,13 @@ const DEFAULT_MODELS: Record<string, { asrModel: string; ttsModel: string }> = {
 }
 const DEFAULTS = { tokenTtlSeconds: 600, tokensPerHour: 60 }
 
+/**
+ * Where a voice stands: `available` on the official list only, `enabled` added and shown to
+ * members, `disabled` added but hidden for now.
+ */
+export type VoiceState = 'available' | 'enabled' | 'disabled'
+const VOICE_STATES: readonly VoiceState[] = ['available', 'enabled', 'disabled']
+
 export interface VoiceEntry {
   vendor: string
   id: string
@@ -65,10 +72,10 @@ export interface VoiceEntry {
   models: string[]
   /** The vendor's own sample, when its list has one. */
   sampleUrl: string | null
-  enabled: boolean
+  state: VoiceState
 }
 
-type ParsedVoice = Omit<VoiceEntry, 'vendor' | 'enabled'>
+type ParsedVoice = Omit<VoiceEntry, 'vendor' | 'state'>
 
 /** What the phone authenticates to a voice vendor with. */
 export interface VoiceToken {
@@ -88,7 +95,7 @@ export interface VoiceToken {
 
 interface CatalogRow {
   vendor: string; id: string; name: string; description: string | null; gender: 'female' | 'male' | null; languages: string | null
-  family: string | null; models: string; sample_url: string | null; enabled: number
+  family: string | null; models: string; sample_url: string | null; state: VoiceState
 }
 
 function plainText(html: string): string {
@@ -313,7 +320,7 @@ export class Voice {
       : await this.db.query<CatalogRow>('select * from voice_catalog where vendor = ? order by position', [vendor])
     return rows.map(row => ({
       vendor: row.vendor, id: row.id, name: row.name, description: row.description, gender: row.gender, languages: row.languages,
-      family: row.family, models: JSON.parse(row.models) as string[], sampleUrl: row.sample_url, enabled: row.enabled === 1,
+      family: row.family, models: JSON.parse(row.models) as string[], sampleUrl: row.sample_url, state: row.state,
     }))
   }
 
@@ -324,8 +331,8 @@ export class Voice {
   }
 
   /**
-   * Read a vendor's official voice list again. Voices keep whether members see
-   * them; the first fetch shows them all, later new ones wait for an administrator.
+   * Read a vendor's official voice list again. Voices keep their state; new ones (all of
+   * them on the first fetch) are `available` until an administrator adds them.
    * A page the parser cannot read leaves the list as it was.
    */
   async refreshCatalog(id: string, fetchImpl: typeof fetch = fetch): Promise<{ voices: number; added: number }> {
@@ -344,30 +351,33 @@ export class Voice {
     const voices = vendor.protocol === 'dashscope' ? parseDashscopeVoices(body) : parseVolcengineVoices(body)
     if (voices.length === 0) throw new Refusal(502, `没能从 ${vendor.name} 的官方页面读出音色，页面可能改版了；音色列表保持不变`)
     return this.db.transaction(async (tx) => {
-      const before = new Map((await this.catalog(id)).map(v => [v.id, v.enabled]))
-      const first = before.size === 0
+      const before = new Map((await this.catalog(id)).map(v => [v.id, v.state]))
       const now = this.now()
       await tx.run('delete from voice_catalog where vendor = ?', [id])
       for (const [position, v] of voices.entries()) {
-        const enabled = before.get(v.id) ?? first
-        await tx.run(`insert into voice_catalog (vendor, id, name, description, gender, languages, family, models, sample_url, enabled, position, updated_at)
-          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [id, v.id, v.name, v.description, v.gender, v.languages, v.family, JSON.stringify(v.models), v.sampleUrl, enabled ? 1 : 0, position, now])
+        const state = before.get(v.id) ?? 'available'
+        // `enabled` mirrors the state for an older service (schema step 3).
+        await tx.run(`insert into voice_catalog (vendor, id, name, description, gender, languages, family, models, sample_url, state, enabled, position, updated_at)
+          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, v.id, v.name, v.description, v.gender, v.languages, v.family, JSON.stringify(v.models), v.sampleUrl, state, state === 'enabled' ? 1 : 0, position, now])
       }
       return { voices: voices.length, added: voices.filter(v => !before.has(v.id)).length }
     })
   }
 
-  /** Exactly which of a vendor's voices members see. */
-  async setEnabledVoices(vendor: string, ids: unknown): Promise<number> {
+  /**
+   * Add a voice (`enabled`), hide it for now (`disabled`) or show it again (`enabled`).
+   * A voice once added is not taken back to `available`.
+   * @returns the voice as it now stands.
+   */
+  async setVoiceState(vendor: string, voiceId: unknown, state: unknown): Promise<VoiceEntry> {
     await this.voiceVendor(vendor)
-    if (!Array.isArray(ids) || ids.some(v => typeof v !== 'string')) throw new Refusal(400, '音色列表格式不正确')
-    const wanted = new Set(ids as string[])
-    await this.db.transaction(async (tx) => {
-      await tx.run('update voice_catalog set enabled = 0 where vendor = ?', [vendor])
-      for (const id of wanted) await tx.run('update voice_catalog set enabled = 1 where vendor = ? and id = ?', [vendor, id])
-    })
-    return (await this.catalog(vendor)).filter(v => v.enabled).length
+    if (typeof state !== 'string' || !VOICE_STATES.includes(state as VoiceState)) throw new Refusal(400, '音色状态只能是启用或停用')
+    const voice = (await this.catalog(vendor)).find(v => v.id === voiceId)
+    if (voice === undefined) throw new Refusal(404, `没有音色 ${String(voiceId).slice(0, 60)}`)
+    if (state === 'available' && voice.state !== 'available') throw new Refusal(400, '已添加的音色只能启用或停用')
+    await this.db.run('update voice_catalog set state = ?, enabled = ? where vendor = ? and id = ?', [state, state === 'enabled' ? 1 : 0, vendor, voice.id])
+    return { ...voice, state: state as VoiceState }
   }
 
   /** The member's usable key for a voice vendor, if any. */
@@ -385,7 +395,7 @@ export class Voice {
       const s = settings.vendors[vendor.id]
       if (s === undefined || (!s.asr && !s.tts) || await this.keyFor(member, vendor) === undefined) continue
       const voices = (await this.catalog(vendor.id))
-        .filter(v => v.enabled && (v.models.length === 0 || v.models.includes(s.ttsModel)))
+        .filter(v => v.state === 'enabled' && (v.models.length === 0 || v.models.includes(s.ttsModel)))
         .map(({ id, name, description, gender, languages, family, sampleUrl }) => ({ id, name, description, gender, languages, family, sampleUrl }))
       vendors.push({
         id: vendor.id, name: vendor.name, protocol: vendor.protocol,
