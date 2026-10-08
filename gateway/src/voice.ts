@@ -370,16 +370,15 @@ export class Voice {
   }
 
   /**
-   * Add a voice (`enabled`), hide it for now (`disabled`) or show it again (`enabled`).
-   * A voice once added is not taken back to `available`.
+   * Add a voice to the library (`enabled`), hide it for now (`disabled`), show it again
+   * (`enabled`) or take it out of the library (`available`: back on the official list only).
    * @returns the voice as it now stands.
    */
   async setVoiceState(vendor: string, voiceId: unknown, state: unknown): Promise<VoiceEntry> {
     await this.voiceVendor(vendor)
-    if (typeof state !== 'string' || !VOICE_STATES.includes(state as VoiceState)) throw new Refusal(400, '音色状态只能是启用或停用')
+    if (typeof state !== 'string' || !VOICE_STATES.includes(state as VoiceState)) throw new Refusal(400, '音色只能添加、启用、停用或删除')
     const voice = (await this.catalog(vendor)).find(v => v.id === voiceId)
     if (voice === undefined) throw new Refusal(404, `没有音色 ${String(voiceId).slice(0, 60)}`)
-    if (state === 'available' && voice.state !== 'available') throw new Refusal(400, '已添加的音色只能启用或停用')
     await this.db.run('update voice_catalog set state = ?, enabled = ? where vendor = ? and id = ?', [state, state === 'enabled' ? 1 : 0, vendor, voice.id])
     return { ...voice, state: state as VoiceState }
   }

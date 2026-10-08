@@ -550,7 +550,7 @@ export class AdminService {
     return this.voiceStore.sample(vendor, voice, this.fetch)
   }
 
-  /** Add a voice to what members can pick, hide it for now, or show it again. */
+  /** Add a voice to the library members pick from, hide it for now, show it again, or take it out. */
   async setVoiceState(actor: Actor, vendor: string, voice: unknown, state: unknown) {
     const entry = await this.voiceStore.setVoiceState(vendor, voice, state)
     await this.audit(actor, 'voice-voices', vendor, `${entry.id} ${entry.state}`)

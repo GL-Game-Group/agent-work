@@ -204,11 +204,14 @@ describe('语音 for phones', () => {
     for (const [id] of await states('volc-voice')) await rt.admin.setVoiceState(admin, 'volc-voice', id ?? '', 'enabled')
   })
 
-  it('changes one voice at a time: add, hide, show again; never back to only listed', async () => {
-    await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'Serena', 'on'), /启用或停用/u)
+  it('changes one voice at a time: add, hide, show again, take out of the library', async () => {
+    await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'Serena', 'on'), /添加、启用、停用或删除/u)
     await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'nobody', 'enabled'), /没有音色/u)
     await assert.rejects(rt.admin.setVoiceState(admin, 'deepseek', 'Cherry', 'enabled'), /没有语音厂商/u)
-    await assert.rejects(rt.admin.setVoiceState(admin, 'qwen-voice', 'Ethan', 'available'), /只能启用或停用/u)
+    // 删除: Serena goes back to the official list, from where it can be added again.
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Serena', 'enabled')
+    assert.equal((await rt.admin.setVoiceState(admin, 'qwen-voice', 'Serena', 'available')).state, 'available')
+    assert.equal((await rt.admin.voice()).voices.find(v => v.id === 'Serena')?.state, 'available')
     const audit = (await store.recentAudit(20)).filter(e => e.action === 'voice-voices').map(e => e.detail)
     assert.ok(audit.includes('Ethan disabled') && audit.includes('Cherry enabled'), JSON.stringify(audit))
   })
@@ -263,6 +266,11 @@ describe('语音 for phones', () => {
       return body.vendors.find(v => v.id === 'qwen-voice')?.tts?.voices.map(v => v.id)
     }
     await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'disabled')
+    assert.deepEqual(await qwenVoices(), [])
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'enabled')
+    assert.deepEqual(await qwenVoices(), ['Cherry'])
+    // 删除 takes it off the phones too; adding it again brings it back.
+    await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'available')
     assert.deepEqual(await qwenVoices(), [])
     await rt.admin.setVoiceState(admin, 'qwen-voice', 'Cherry', 'enabled')
     assert.deepEqual(await qwenVoices(), ['Cherry'])

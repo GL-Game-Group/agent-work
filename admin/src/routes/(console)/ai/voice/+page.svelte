@@ -3,6 +3,7 @@
 	import * as Card from '#lib/components/ui/card/index.js';
 	import * as Tabs from '#lib/components/ui/tabs/index.js';
 	import * as Table from '#lib/components/ui/table/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Badge } from '#lib/components/ui/badge/index.js';
 	import { Switch } from '#lib/components/ui/switch/index.js';
@@ -16,6 +17,7 @@
 	import Square from '@lucide/svelte/icons/square';
 	import Search from '@lucide/svelte/icons/search';
 	import Loader from '@lucide/svelte/icons/loader-circle';
+	import LibraryBig from '@lucide/svelte/icons/library-big';
 	import { toast } from 'svelte-sonner';
 	import { toastForm, toastResult } from '#lib/form.js';
 	import { relative } from '#lib/labels.js';
@@ -24,15 +26,47 @@
 	type VoiceRow = (typeof data.voices)[number];
 
 	let tab = $state('qwen-voice');
+	const vendorName = (id: string) => data.vendors.find((v) => v.id === id)?.name ?? id;
+	const matches = (v: VoiceRow, text: string) => `${v.id} ${v.name} ${v.description ?? ''} ${v.languages ?? ''}`.toLowerCase().includes(text.toLowerCase());
+	// 音色库: the voices added (启用 shows them on members' phones, 停用 hides them for now).
 	let query = $state('');
-	let family = $state('all');
-	const familiesOf = (vendor: string) => [...new Set(data.voices.filter((v) => v.vendor === vendor).map((v) => v.family ?? ''))].filter((f) => f !== '');
-	const rowsOf = (vendor: string) =>
-		data.voices.filter((v) => v.vendor === vendor && (family === 'all' || v.family === family) &&
-			`${v.id} ${v.name} ${v.description ?? ''} ${v.languages ?? ''}`.toLowerCase().includes(query.toLowerCase()));
-	// 已添加: what members can pick (启用) or have had hidden for now (停用).
+	const libraryOf = (vendor: string) => data.voices.filter((v) => v.vendor === vendor && v.state !== 'available' && matches(v, query));
 	const addedOf = (vendor: string) => data.voices.filter((v) => v.vendor === vendor && v.state !== 'available');
 	const shownOf = (vendor: string) => data.voices.filter((v) => v.vendor === vendor && v.state === 'enabled').length;
+
+	// 官方音色库 (a dialog): the vendor's official list, filtered, to add from.
+	// The vendors write languages every which way (中文, 美式英语, 方言：粤语, 上海, 中文（四川话）…): six buckets by keyword.
+	const LANGUAGES: { value: string; label: string; test: RegExp }[] = [
+		{ value: 'zh', label: '中文', test: /中文|普通话/u },
+		// 中文（四川话） counts, 中文（普通话） does not.
+		{ value: 'dialect', label: '方言', test: /方言|粤语|闽南|（(?!普通话)[^）]*话）|台湾|(?:^|[、，,\s])(?:上海|北京|天津|南京|河南|四川|陕西|东北|重庆|湖南)/u },
+		{ value: 'en', label: '英语', test: /英语/u },
+		{ value: 'ja', label: '日语', test: /日语/u },
+		{ value: 'ko', label: '韩语', test: /韩语/u },
+		{ value: 'other', label: '其他外语', test: /法语|德语|俄语|意大利语|西班牙语|西语|葡萄牙语|印尼语|泰语|越南语|菲律宾语|阿拉伯语|马来语|土耳其语|语种/u }
+	];
+	let pickerOpen = $state(false);
+	let pickerVendor = $state('qwen-voice');
+	let pickQuery = $state('');
+	let pickGender = $state('all');
+	let pickLanguage = $state('all');
+	let pickFamily = $state('all');
+	function openPicker(vendor: string) {
+		pickerVendor = vendor;
+		pickQuery = '';
+		pickGender = 'all';
+		pickLanguage = 'all';
+		pickFamily = 'all';
+		pickerOpen = true;
+	}
+	const familiesOf = (vendor: string) => [...new Set(data.voices.filter((v) => v.vendor === vendor).map((v) => v.family ?? ''))].filter((f) => f !== '');
+	const officialOf = (vendor: string) => {
+		const language = LANGUAGES.find((l) => l.value === pickLanguage);
+		return data.voices.filter((v) => v.vendor === vendor && matches(v, pickQuery) &&
+			(pickGender === 'all' || v.gender === pickGender) &&
+			(language === undefined || language.test.test(v.languages ?? '')) &&
+			(pickFamily === 'all' || v.family === pickFamily));
+	};
 	// The row whose 添加 / 停用 / 启用 is on its way: one at a time.
 	let changing = $state<string | null>(null);
 	const change = (verb: string): SubmitFunction => ({ formData }) => {
@@ -73,7 +107,7 @@
 	let refreshing = $state<string | null>(null);
 	const refresh: SubmitFunction = ({ formData }) => {
 		refreshing = String(formData.get('vendor'));
-		const after = toastResult((d) => `读到 ${String(d?.voices ?? 0)} 个音色${Number(d?.added ?? 0) > 0 ? `，新增 ${String(d?.added)} 个（默认不开放）` : ''}`);
+		const after = toastResult((d) => `读到 ${String(d?.voices ?? 0)} 个音色${Number(d?.added ?? 0) > 0 ? `，新增 ${String(d?.added)} 个，在官方音色库里，需要的点“添加”` : ''}`);
 		return async (opts) => {
 			await after(opts);
 			refreshing = null;
@@ -126,133 +160,128 @@
 	<div class="font-medium">{r.name}{#if r.gender}<span class="text-muted-foreground ml-1 text-xs">{GENDER[r.gender]}</span>{/if}</div>
 	<div class="text-muted-foreground font-mono text-xs">{r.id}</div>
 {/snippet}
-{#snippet aboutCells(r: VoiceRow)}
-	<Table.Cell class="text-muted-foreground max-w-64 text-xs whitespace-normal">{r.description ?? ''}{#if family === 'all' && r.family}<div class="opacity-70">{r.family}</div>{/if}</Table.Cell>
-	<Table.Cell class="text-muted-foreground max-w-48 truncate text-xs" title={r.languages ?? ''}>{r.languages ?? ''}</Table.Cell>
+{#snippet playButton(r: VoiceRow)}
+	<Button variant="ghost" size="icon-sm" onclick={() => play(r)} aria-label="试听 {r.name}" title={r.sampleUrl ? '官方试听' : '用已录入的 Key 现场合成一句'}>
+		{#if loading === r.id}<Loader class="animate-spin" />{:else if playing === r.id}<Square />{:else}<Play />{/if}
+	</Button>
 {/snippet}
-{#snippet playCell(r: VoiceRow)}
-	<Table.Cell>
-		<Button variant="ghost" size="icon-sm" onclick={() => play(r)} aria-label="试听 {r.name}" title={r.sampleUrl ? '官方试听' : '用已录入的 Key 现场合成一句'}>
-			{#if loading === r.id}<Loader class="animate-spin" />{:else if playing === r.id}<Square />{:else}<Play />{/if}
-		</Button>
-	</Table.Cell>
-{/snippet}
-{#snippet stateButton(r: VoiceRow, state: 'enabled' | 'disabled', verb: string, variant: 'default' | 'outline')}
+{#snippet stateButton(r: VoiceRow, state: 'enabled' | 'disabled' | 'available', verb: string, variant: 'default' | 'outline' | 'ghost')}
 	<form method="POST" action="?/voice" use:enhance={change(verb)}>
 		<input type="hidden" name="vendor" value={r.vendor} />
 		<input type="hidden" name="id" value={r.id} />
 		<input type="hidden" name="state" value={state} />
-		<Button type="submit" size="sm" {variant} disabled={changing !== null} data-action="voice-{verb}">{verb}</Button>
+		<Button type="submit" size="sm" {variant} disabled={changing !== null} data-action="voice-{verb}" class={verb === '删除' ? 'text-destructive' : ''}>{verb}</Button>
 	</form>
 {/snippet}
 
 <Card.Root class="mt-4">
 	<Card.Header>
-		<Card.Title>音色</Card.Title>
-		<Card.Description>从两家官方的音色列表读取。在“官方音色”里点“添加”，音色就出现在成员手机上；已添加的可以停用（成员暂时看不到），停用的可以重新启用。千问播放官方试听；火山没有官方试听，用已录入的 Key 现场合成一句（合成过的会缓存）。</Card.Description>
+		<Card.Title>音色库</Card.Title>
+		<Card.Description>成员在手机上可选的音色：启用的出现在手机上，停用的暂时隐藏，删除的回到官方音色库。千问播放官方试听；火山没有官方试听，用已录入的 Key 现场合成一句（合成过的会缓存）。</Card.Description>
+		<Card.Action><Button onclick={() => openPicker(tab)} data-action="open-official"><LibraryBig />打开官方音色库</Button></Card.Action>
 	</Card.Header>
 	<Card.Content>
-		<Tabs.Root bind:value={tab} onValueChange={() => { query = ''; family = 'all'; }}>
+		<Tabs.Root bind:value={tab} onValueChange={() => (query = '')}>
 			<Tabs.List>
 				{#each data.vendors as v (v.id)}
-					<Tabs.Trigger value={v.id}>{v.name}（启用 {shownOf(v.id)} / 已添加 {addedOf(v.id).length}）</Tabs.Trigger>
+					<Tabs.Trigger value={v.id}>{v.name}（启用 {shownOf(v.id)} / 共 {addedOf(v.id).length}）</Tabs.Trigger>
 				{/each}
 			</Tabs.List>
 			{#each data.vendors as v (v.id)}
-				{@const rows = rowsOf(v.id)}
-				{@const added = rows.filter((r) => r.state !== 'available')}
-				<Tabs.Content value={v.id} class="space-y-4 pt-2">
-					<div class="flex flex-wrap items-center gap-2">
-						<div class="relative min-w-48 flex-1">
+				{@const rows = libraryOf(v.id)}
+				<Tabs.Content value={v.id} class="space-y-3 pt-2" data-voice-section="library">
+					{#if addedOf(v.id).length > 0}
+						<div class="relative max-w-sm">
 							<Search class="text-muted-foreground absolute top-2.5 left-2.5 size-4" />
 							<Input bind:value={query} placeholder="筛选名称、描述、语种" class="pl-8" />
 						</div>
-						{#if familiesOf(v.id).length > 1}
-							<Choice bind:value={family} class="w-64" options={[{ value: 'all', label: '全部系列' }, ...familiesOf(v.id).map((f) => ({ value: f, label: f }))]} />
-						{/if}
-						<form method="POST" action="?/refresh" use:enhance={refresh}>
-							<input type="hidden" name="vendor" value={v.id} />
-							<Button type="submit" variant="outline" disabled={refreshing !== null}><RefreshCw class={refreshing === v.id ? 'animate-spin' : ''} />从官方更新</Button>
-						</form>
-						<span class="text-muted-foreground text-xs">{v.catalogAt ? `${relative(v.catalogAt)}更新` : '还没有读取过'}</span>
-					</div>
-					{#if data.voices.some((x) => x.vendor === v.id)}
-						<section class="space-y-2" data-voice-section="added">
-							<h3 class="text-sm font-medium">已添加（{addedOf(v.id).length}）<span class="text-muted-foreground ml-2 text-xs font-normal">启用的出现在成员手机上</span></h3>
-							{#if added.length > 0}
-								<div class="max-h-[24rem] overflow-y-auto rounded-md border">
-									<Table.Root>
-										<Table.Header>
-											<Table.Row>
-												<Table.Head>音色</Table.Head>
-												<Table.Head>描述</Table.Head>
-												<Table.Head>语种</Table.Head>
-												<Table.Head class="w-20">状态</Table.Head>
-												<Table.Head class="w-20">操作</Table.Head>
-												<Table.Head class="w-16">试听</Table.Head>
-											</Table.Row>
-										</Table.Header>
-										<Table.Body>
-											{#each added as r (r.id)}
-												<Table.Row data-voice={r.id}>
-													<Table.Cell>{@render voiceCell(r)}</Table.Cell>
-													{@render aboutCells(r)}
-													<Table.Cell>
-														{#if r.state === 'enabled'}<Badge variant="secondary">启用</Badge>{:else}<Badge variant="outline" class="text-muted-foreground">停用</Badge>{/if}
-													</Table.Cell>
-													<Table.Cell>
-														{#if r.state === 'enabled'}{@render stateButton(r, 'disabled', '停用', 'outline')}{:else}{@render stateButton(r, 'enabled', '启用', 'default')}{/if}
-													</Table.Cell>
-													{@render playCell(r)}
-												</Table.Row>
-											{/each}
-										</Table.Body>
-									</Table.Root>
-								</div>
-							{:else}
-								<p class="text-muted-foreground rounded-md border p-4 text-center text-sm">{addedOf(v.id).length === 0 ? '还没有添加音色：在下面的官方音色里点“添加”' : '没有匹配的已添加音色'}</p>
-							{/if}
-						</section>
-						<section class="space-y-2" data-voice-section="official">
-							<h3 class="text-sm font-medium">官方音色（{rows.length}）</h3>
-							{#if rows.length > 0}
-								<div class="max-h-[32rem] overflow-y-auto rounded-md border">
-									<Table.Root>
-										<Table.Header>
-											<Table.Row>
-												<Table.Head>音色</Table.Head>
-												<Table.Head>描述</Table.Head>
-												<Table.Head>语种</Table.Head>
-												<Table.Head class="w-20">操作</Table.Head>
-												<Table.Head class="w-16">试听</Table.Head>
-											</Table.Row>
-										</Table.Header>
-										<Table.Body>
-											{#each rows as r (r.id)}
-												<Table.Row data-voice={r.id}>
-													<Table.Cell>{@render voiceCell(r)}</Table.Cell>
-													{@render aboutCells(r)}
-													<Table.Cell>
-														{#if r.state === 'available'}{@render stateButton(r, 'enabled', '添加', 'outline')}{:else}<span class="text-muted-foreground text-xs">已添加</span>{/if}
-													</Table.Cell>
-													{@render playCell(r)}
-												</Table.Row>
-											{/each}
-										</Table.Body>
-									</Table.Root>
-								</div>
-							{:else}
-								<p class="text-muted-foreground rounded-md border p-4 text-center text-sm">没有匹配的音色</p>
-							{/if}
-						</section>
+					{/if}
+					{#if rows.length > 0}
+						<div class="max-h-[32rem] overflow-y-auto rounded-md border">
+							<Table.Root>
+								<Table.Header>
+									<Table.Row>
+										<Table.Head>音色</Table.Head>
+										<Table.Head>描述</Table.Head>
+										<Table.Head class="w-20">状态</Table.Head>
+										<Table.Head class="w-40">操作</Table.Head>
+										<Table.Head class="w-16">试听</Table.Head>
+									</Table.Row>
+								</Table.Header>
+								<Table.Body>
+									{#each rows as r (r.id)}
+										<Table.Row data-voice={r.id}>
+											<Table.Cell>{@render voiceCell(r)}</Table.Cell>
+											<Table.Cell class="text-muted-foreground max-w-80 text-xs whitespace-normal">{r.description ?? ''}<div class="truncate opacity-70" title={r.languages ?? ''}>{r.languages ?? ''}</div></Table.Cell>
+											<Table.Cell>
+												{#if r.state === 'enabled'}<Badge variant="secondary">启用</Badge>{:else}<Badge variant="outline" class="text-muted-foreground">停用</Badge>{/if}
+											</Table.Cell>
+											<Table.Cell>
+												<div class="flex gap-1">
+													{#if r.state === 'enabled'}{@render stateButton(r, 'disabled', '停用', 'outline')}{:else}{@render stateButton(r, 'enabled', '启用', 'default')}{/if}
+													{@render stateButton(r, 'available', '删除', 'ghost')}
+												</div>
+											</Table.Cell>
+											<Table.Cell>{@render playButton(r)}</Table.Cell>
+										</Table.Row>
+									{/each}
+								</Table.Body>
+							</Table.Root>
+						</div>
 					{:else}
-						<p class="text-muted-foreground p-6 text-center text-sm">点“从官方更新”读取音色列表</p>
+						<p class="text-muted-foreground rounded-md border p-6 text-center text-sm">{addedOf(v.id).length === 0 ? `${v.name}的音色库是空的：点右上角“打开官方音色库”添加` : '没有匹配的音色'}</p>
 					{/if}
 				</Tabs.Content>
 			{/each}
 		</Tabs.Root>
 	</Card.Content>
 </Card.Root>
+
+<Dialog.Root bind:open={pickerOpen}>
+	<Dialog.Content class="sm:max-w-4xl" data-voice-section="official">
+		{@const v = data.vendors.find((x) => x.id === pickerVendor)}
+		{@const rows = officialOf(pickerVendor)}
+		<Dialog.Header>
+			<Dialog.Title>官方音色库</Dialog.Title>
+			<Dialog.Description>点“添加”放进音色库（立即对成员启用）。{v?.catalogAt ? `官方列表${relative(v.catalogAt)}更新。` : '还没有读取过官方列表。'}</Dialog.Description>
+		</Dialog.Header>
+		<div class="flex flex-wrap items-center gap-2">
+			<Choice bind:value={pickerVendor} class="w-32" options={data.vendors.map((x) => ({ value: x.id, label: x.name }))} />
+			<div class="relative min-w-40 flex-1">
+				<Search class="text-muted-foreground absolute top-2.5 left-2.5 size-4" />
+				<Input bind:value={pickQuery} placeholder="搜索名称、描述" class="pl-8" />
+			</div>
+			<Choice bind:value={pickGender} class="w-24" options={[{ value: 'all', label: '全部性别' }, { value: 'female', label: '女' }, { value: 'male', label: '男' }]} />
+			<Choice bind:value={pickLanguage} class="w-28" options={[{ value: 'all', label: '全部语言' }, ...LANGUAGES.map((l) => ({ value: l.value, label: l.label }))]} />
+			{#if familiesOf(pickerVendor).length > 1}
+				<Choice bind:value={pickFamily} class="w-56" options={[{ value: 'all', label: '全部系列' }, ...familiesOf(pickerVendor).map((f) => ({ value: f, label: f }))]} />
+			{/if}
+			<form method="POST" action="?/refresh" use:enhance={refresh}>
+				<input type="hidden" name="vendor" value={pickerVendor} />
+				<Button type="submit" variant="outline" disabled={refreshing !== null} title="重新读取 {vendorName(pickerVendor)} 的官方音色列表"><RefreshCw class={refreshing === pickerVendor ? 'animate-spin' : ''} />从官方更新</Button>
+			</form>
+		</div>
+		{#if rows.length > 0}
+			<div class="text-muted-foreground text-xs">共 {rows.length} 个</div>
+			<div class="max-h-[60vh] divide-y overflow-y-auto rounded-md border">
+				{#each rows as r (r.id)}
+					<div class="flex items-center gap-3 px-3 py-2" data-voice={r.id}>
+						<div class="min-w-0 flex-1">
+							<div class="truncate text-sm font-medium">{r.name}{#if r.gender}<span class="text-muted-foreground ml-1 text-xs">{GENDER[r.gender]}</span>{/if}<span class="text-muted-foreground ml-2 font-mono text-xs font-normal">{r.id}</span></div>
+							<div class="text-muted-foreground truncate text-xs" title="{r.description ?? ''} · {r.languages ?? ''}">{r.description ?? ''}{r.description && r.languages ? ' · ' : ''}{r.languages ?? ''}</div>
+						</div>
+						{@render playButton(r)}
+						<div class="w-20 text-right">
+							{#if r.state === 'available'}{@render stateButton(r, 'enabled', '添加', 'outline')}{:else}<span class="text-muted-foreground text-xs">已在音色库</span>{/if}
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="text-muted-foreground rounded-md border p-6 text-center text-sm">{data.voices.some((x) => x.vendor === pickerVendor) ? '没有匹配的音色' : '点“从官方更新”读取官方音色列表'}</p>
+		{/if}
+	</Dialog.Content>
+</Dialog.Root>
 
 <div class="mt-4 grid gap-4 lg:grid-cols-2">
 	<Card.Root>
