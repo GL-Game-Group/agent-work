@@ -122,7 +122,7 @@
 			hint: { dashscope: '如 qwen3-asr-flash-realtime', volcengine: '流式识别的资源 ID，如 volc.seedasr.sauc.duration' }
 		},
 		{
-			flag: 'asrFile', model: 'asrFileModel', label: '识别', description: '说完后整段识别（手机上叫“识别”，暂未接入）',
+			flag: 'asrFile', model: 'asrFileModel', label: '识别', description: '说完后整段识别（手机上叫“识别”）',
 			hint: { dashscope: '如 qwen3-asr-flash', volcengine: '录音文件识别极速版的资源 ID，如 volc.bigasr.auc_turbo' }
 		},
 		{
