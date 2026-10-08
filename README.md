@@ -105,6 +105,12 @@ pnpm try:ios                       # 连着多台时加 --device <名称或 UDID
 mobile/ios/testflight.sh
 ```
 
+基于 Orca 的 GL Work 手机 App（`orca/mobile`，构建时设 `EXPO_PUBLIC_GLWORK_BUILD=1`，见 `orca/docs/fork/changes/glwork-mobile-brand.md`）同样是 `com.glgwork.work`，装上会替换上面的原生 App：
+
+```bash
+pnpm try:ios:orca                  # 生成 iOS 工程（需要 CocoaPods）、编译 Release、装到数据线连着的 iPhone；--device、--skip-prebuild
+```
+
 语音（语音输入、播报）：手机直连厂商，内置两个语音厂商“千问语音”（`qwen-voice`，阿里云百炼）和“火山语音”（`volc-voice`，豆包语音）。管理员在“API Key”里给成员录入并分配 Key（火山填 `APP ID:Access Token`），在后台“AI 管理 → 语音”里分别打开识别和播报、选模型、从官方音色列表更新并勾选开放的音色。手机用手机令牌调 `GET /agent-work/phone/voice`（可用的厂商、模型、音色和官方试听地址）和 `POST /agent-work/phone/voice/token`（`{ vendor }`，公司服务用成员的 Key 换百炼的临时 API Key 或火山的 STS 令牌，有效期 60–1800 秒，按人每小时限次），拿临时令牌直连厂商；成员的 Key 不出公司服务。iOS 原生（本机识别、系统语音）始终可用。
 
 调试版可以用环境变量跳过登录（`SIMCTL_CHILD_` 前缀传给 `xcrun simctl launch`）：`GLWORK_SERVER`（公司服务地址，如 `http://127.0.0.1:8790`）、`GLWORK_TOKEN`（手机令牌）、`GLWORK_MEMBER`、`GLWORK_OPEN_FIRST_HOST=1`（自动打开第一台在线的电脑）、`GLWORK_SCENARIO=live-session` 加 `GLWORK_SESSION=<会话 id>`（直接打开一个会话）、`GLWORK_SCENARIO=projects|conversation`（离线演示数据）。发布版里这些都不生效。TestFlight 构建 90 天后过期，要定期重新上传。

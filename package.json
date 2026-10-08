@@ -13,6 +13,7 @@
     "package": "node scripts/package.mjs",
     "try:desktop": "node scripts/try-desktop.mjs",
     "try:ios": "node scripts/try-ios.mjs",
+    "try:ios:orca": "node scripts/try-ios-orca.mjs",
     "gateway:test": "pnpm --filter @agent-work/gateway typecheck && pnpm --filter @agent-work/gateway test",
     "brand": "node scripts/brand.mjs",
     "admin:dev": "pnpm --filter @agent-work/admin dev",

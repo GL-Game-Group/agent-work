@@ -11,8 +11,8 @@
  * registered in the developer account, and Developer Mode on.
  */
 import { execFileSync } from 'node:child_process'
-import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { installAndOpen, pickPhone } from './ios-devices.mjs'
 import { ROOT, fail } from './lib.mjs'
 
 const BUNDLE_ID = 'com.glgwork.work'
@@ -31,35 +31,11 @@ function run(command, argv) {
   execFileSync(command, argv, { cwd: ROOT, stdio: 'inherit' })
 }
 
-/** Physical iPhones that devicectl can reach now. */
-function phones() {
-  const file = join(DERIVED, 'devices.json')
-  execFileSync('xcrun', ['devicectl', 'list', 'devices', '--json-output', file], { stdio: 'ignore' })
-  const { result } = JSON.parse(readFileSync(file, 'utf8'))
-  rmSync(file)
-  return result.devices
-    .filter(d => d.hardwareProperties?.reality === 'physical' && d.hardwareProperties?.platform === 'iOS')
-    .filter(d => d.connectionProperties?.tunnelState !== 'unavailable')
-    .map(d => ({ id: d.hardwareProperties.udid, name: d.deviceProperties.name, coreId: d.identifier }))
-}
-
-execFileSync('mkdir', ['-p', DERIVED])
-const found = phones()
-const picked = wanted ? found.filter(d => d.name === wanted || d.id === wanted || d.coreId === wanted) : found
-if (picked.length === 0) fail(wanted ? `try:ios: no connected iPhone named or with id ${wanted}` : 'try:ios: no iPhone connected; plug it in, unlock it and trust this Mac')
-if (picked.length > 1) fail(`try:ios: several iPhones connected, pick one with --device:\n${picked.map(d => `  ${d.name}  ${d.id}`).join('\n')}`)
-const phone = picked[0]
+const phone = pickPhone('try:ios', DERIVED, wanted)
 console.log(`try:ios: building for ${phone.name}`)
 
 run('xcodebuild', [
   '-project', 'mobile/ios/GLWork.xcodeproj', '-scheme', 'GLWork', '-configuration', 'Debug',
   '-destination', `id=${phone.id}`, '-derivedDataPath', DERIVED, '-allowProvisioningUpdates', '-quiet', 'build',
 ])
-run('xcrun', ['devicectl', 'device', 'install', 'app', '--device', phone.id, join(DERIVED, 'Build', 'Products', 'Debug-iphoneos', 'GLWork.app')])
-try {
-  execFileSync('xcrun', ['devicectl', 'device', 'process', 'launch', '--terminate-existing', '--device', phone.id, BUNDLE_ID], { stdio: 'pipe' })
-  console.log(`try:ios: GL Work is open on ${phone.name}`)
-} catch {
-  // Installed all the same; iOS opens apps only on an unlocked phone.
-  console.log(`try:ios: installed on ${phone.name}; unlock the phone and open GL Work`)
-}
+installAndOpen('try:ios', phone, join(DERIVED, 'Build', 'Products', 'Debug-iphoneos', 'GLWork.app'), BUNDLE_ID)
