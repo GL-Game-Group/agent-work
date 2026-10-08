@@ -123,12 +123,16 @@ export function parseDashscopeVoices(page: string): ParsedVoice[] {
   for (const row of html.matchAll(/<tr>([\s\S]*?)<\/tr>/gu)) {
     const cells = [...(row[1] as string).matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gu)].map(c => c[1] as string)
     if (cells.length < 4) continue
-    const id = /<code>([^<]+)<\/code>/u.exec(cells[0] as string)?.[1]?.trim()
+    // Two layouts: | <code>id</code> | 音色名, 描述, sample | languages | models | (until 2026-10), and
+    // | 名称, voice 参数 (the id), 描述 | languages | sample | models |.
+    const coded = /<code>([^<]+)<\/code>/u.exec(cells[0] as string)?.[1]?.trim()
+    const id = coded ?? /参数<\/strong>：\s*([\w.-]+)/u.exec(cells[0] as string)?.[1]
     if (id === undefined || !VOICE_ID.test(id)) continue
-    const detail = cells[1] as string
-    const name = /音色名<\/strong>：([^<]+)/u.exec(detail)?.[1]?.trim() ?? id
+    const detail = coded === undefined ? cells[0] as string : cells[1] as string
+    const name = /(?:音色名|名称)<\/strong>：([^<]+)/u.exec(detail)?.[1]?.trim() ?? id
     const description = /描述<\/strong>：([^<]+)/u.exec(detail)?.[1]?.trim() ?? null
-    const sampleUrl = /<audio[^>]*src="(https:\/\/[^"]+)"/u.exec(detail)?.[1] ?? null
+    const sampleUrl = /<audio[^>]*src="(https:\/\/[^"]+)"/u.exec(row[1] as string)?.[1] ?? null
+    const languages = coded === undefined ? cells[1] as string : cells[2] as string
     const models = [...(cells[3] as string).matchAll(/qwen[\w.-]*tts[\w.-]*/gu)].map(m => m[0])
     const family = marks.filter(h => h.at < row.index).at(-1)?.title ?? null
     const known = voices.get(id)
@@ -137,7 +141,7 @@ export function parseDashscopeVoices(page: string): ParsedVoice[] {
       continue
     }
     voices.set(id, {
-      id, name, description, gender: genderOf(description ?? ''), languages: plainText(cells[2] as string) || null,
+      id, name, description, gender: genderOf(description ?? ''), languages: plainText(languages) || null,
       family, models: [...new Set(models)], sampleUrl,
     })
   }

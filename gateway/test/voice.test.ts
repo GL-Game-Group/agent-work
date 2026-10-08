@@ -22,6 +22,13 @@ function dashscopePage(voices: string[]): string {
   return `<script>window.__ICE_PAGE_PROPS__={"content":"<h2 id=\\"a\\">Qwen-TTS实时语音合成音色列表</h2><table><tbody>${rows.join('')}</tbody></table>"}</script>`
 }
 
+/** The page as Alibaba lays it out since 2026-10: 名称 / voice 参数 / 描述 first, the sample in its own column. */
+function dashscopePageNow(voices: string[]): string {
+  const rows = voices.map(id => `<tr><td style=\\"vertical-align:top\\"><strong>名称</strong>：${id}名<p><strong>voice<span class=\\"help-letter-space\\"></span>参数</strong>：${id}</p><p><strong>描述</strong>：温柔（${id === 'Ethan' ? '男性' : '女性'}）</p></td><td>中文（普通话）、英语</td><td><audio src=\\"https://help-static-aliyun-doc.aliyuncs.com/${id}.wav\\" controls=\\"\\"><source src=\\"https://help-static-aliyun-doc.aliyuncs.com/${id}.wav\\"></audio></td><td><ul><li><strong>Qwen3-TTS-Flash-Realtime</strong>：qwen3-tts-flash-realtime</li></ul></td></tr>`)
+  const plain = voices.map(id => `<tr><td><strong>名称</strong>：${id}名<p><strong>voice<span class=\\"help-letter-space\\"></span>参数</strong>：${id}</p></td><td>中文（普通话）</td><td></td><td><ul><li><strong>Qwen3-TTS-Flash</strong>：qwen3-tts-flash</li></ul></td></tr>`)
+  return `<script>window.__ICE_PAGE_PROPS__={"content":"<h2>实时语音合成 </h2><table><tbody>${rows.join('')}</tbody></table><h2>非实时语音合成 </h2><table><tbody>${plain.join('')}</tbody></table>"}</script>`
+}
+
 const VOLCENGINE_PAGE = JSON.stringify({
   Result: {
     MDContent: [
@@ -68,6 +75,14 @@ describe('voice lists', () => {
     assert.equal(voices[0]?.sampleUrl, 'https://help-static-aliyun-doc.aliyuncs.com/Cherry.wav')
     assert.deepEqual(voices[0]?.models, ['qwen3-tts-flash-realtime', 'qwen3-tts-flash-realtime-2025-11-27', 'qwen3-tts-flash'])
     assert.equal(voices[0]?.family, 'Qwen-TTS实时语音合成音色列表')
+  })
+
+  it('reads Alibaba\'s current layout too, with the models of both tables', async () => {
+    const voices = parseDashscopeVoices(dashscopePageNow(['Cherry', 'Ethan']))
+    assert.deepEqual(voices.map(v => [v.id, v.name, v.gender, v.languages]), [['Cherry', 'Cherry名', 'female', '中文（普通话）、英语'], ['Ethan', 'Ethan名', 'male', '中文（普通话）、英语']])
+    assert.equal(voices[0]?.sampleUrl, 'https://help-static-aliyun-doc.aliyuncs.com/Cherry.wav')
+    assert.deepEqual(voices[0]?.models, ['qwen3-tts-flash-realtime', 'qwen3-tts-flash'])
+    assert.equal(voices[0]?.family, '实时语音合成')
   })
 
   it('reads Volcengine voices by model, without the dialogue models', async () => {
