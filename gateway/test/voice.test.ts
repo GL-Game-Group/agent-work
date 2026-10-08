@@ -94,12 +94,12 @@ describe('语音 for phones', () => {
   let admin: Actor
   let page = dashscopePage(['Cherry', 'Ethan'])
   /** What the vendors were asked. */
-  const asked: { url: string; authorization: string | null; body: string | null }[] = []
+  const asked: { url: string; authorization: string | null; apiKey: string | null; appId: string | null; body: string | null }[] = []
   let vendorDown = false
   const fakeFetch: typeof fetch = async (input, init) => {
     const url = String(input)
     const headers = new Headers(init?.headers)
-    asked.push({ url, authorization: headers.get('authorization'), body: typeof init?.body === 'string' ? init.body : null })
+    asked.push({ url, authorization: headers.get('authorization'), apiKey: headers.get('x-api-key'), appId: headers.get('x-api-app-id'), body: typeof init?.body === 'string' ? init.body : null })
     if (url.startsWith('https://help.aliyun.com/')) return new Response(page, { status: 200 })
     if (url.startsWith('https://www.volcengine.com/api/doc/')) return new Response(VOLCENGINE_PAGE, { status: 200 })
     if (vendorDown) throw new TypeError('fetch failed')
@@ -107,9 +107,9 @@ describe('语音 for phones', () => {
       if (headers.get('authorization') !== 'Bearer sk-qwen-alice-0001') return new Response('{}', { status: 401 })
       return Response.json({ token: 'st-temporary', expires_at: 2_000_000_000 })
     }
-    if (url === 'https://openspeech.bytedance.com/api/v1/sts/token') return Response.json({ jwt_token: 'jwt-temporary' })
     if (url.startsWith('https://help-static-aliyun-doc.aliyuncs.com/')) return new Response(new Uint8Array([82, 73, 70, 70]), { headers: { 'content-type': 'audio/x-wav' } })
     if (url === 'https://openspeech.bytedance.com/api/v3/tts/unidirectional') {
+      if (headers.get('x-api-key') !== 'volc-api-key-0001') return Response.json({ code: 45000010, message: 'invalid auth' }, { status: 401 })
       const body = JSON.parse(String(init?.body)) as { req_params: { speaker: string } }
       if (body.req_params.speaker === 'zh_male_m191_uranus_bigtts') return Response.json({ code: 45000000, message: 'speaker not granted' }, { status: 400 })
       // Two audio chunks, then the end, as Volcengine streams them.
@@ -159,9 +159,11 @@ describe('语音 for phones', () => {
     assert.doesNotMatch(config.body, /qwen-voice/u)
   })
 
-  it('takes a Volcengine key only as app id and access token', async () => {
-    await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: 'just-a-token-0001', mode: 'dedicated' }), /APP ID:Access Token/u)
-    await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'alice 火山', key: '6123456789:volc-access-token-0001', mode: 'dedicated', member: 'alice' })
+  it('takes a Volcengine key only as the new console\'s API Key', async () => {
+    // The old console's app id and access token are refused, with where to find the right key.
+    await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: '6123456789:volc-access-token-0001', mode: 'dedicated' }), /新版控制台的 API Key/u)
+    await assert.rejects(async () => await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'x', key: 'two words', mode: 'dedicated' }), /完整的 API Key/u)
+    await rt.admin.addKey(admin, { vendor: 'volc-voice', label: 'alice 火山', key: 'volc-api-key-0001', mode: 'dedicated', member: 'alice' })
   })
 
   it('fetches the official voice lists; later new voices wait for an administrator; a changed page changes nothing', async () => {
@@ -186,6 +188,8 @@ describe('语音 for phones', () => {
     assert.deepEqual([synthesized.contentType, Buffer.from(synthesized.body).toString()], ['audio/mpeg', 'ID3mp3'])
     const call = asked.at(-1)
     assert.equal(call?.url, 'https://openspeech.bytedance.com/api/v3/tts/unidirectional')
+    // The new console's header alone: no app id.
+    assert.deepEqual([call?.apiKey, call?.appId], ['volc-api-key-0001', null])
     assert.match(call?.body ?? '', /"speaker":"zh_male_fanjuanqingnian_mars_bigtts"/u)
     // Made once, then kept.
     await rt.admin.voiceSample('volc-voice', 'zh_male_fanjuanqingnian_mars_bigtts')
@@ -220,20 +224,22 @@ describe('语音 for phones', () => {
     assert.equal((await token('bob', 'qwen-voice')).status, 403)
   })
 
-  it('trades the member\'s key for a vendor token, never handing out the key', async () => {
+  it('trades 千问\'s key for a temporary token; hands out 火山\'s API Key, to be asked for again after the expiry', async () => {
     asked.length = 0
     await rt.admin.setVoiceSettings(admin, { tokenTtlSeconds: 300 })
     const qwen = await token('alice', 'qwen-voice')
     assert.equal(qwen.status, 200)
-    assert.deepEqual(JSON.parse(qwen.body), { vendor: 'qwen-voice', protocol: 'dashscope', token: 'st-temporary', appId: null, expiresAt: 2_000_000_000_000 })
+    assert.deepEqual(JSON.parse(qwen.body), { vendor: 'qwen-voice', protocol: 'dashscope', auth: 'temporary', token: 'st-temporary', appId: null, expiresAt: 2_000_000_000_000 })
     assert.equal(asked.at(-1)?.url, 'https://dashscope.aliyuncs.com/api/v1/tokens?expire_in_seconds=300')
+    assert.doesNotMatch(qwen.body, /sk-qwen-alice/u)
+    const before = Date.now()
     const volc = await token('alice', 'volc-voice')
     assert.equal(volc.status, 200)
-    const body = JSON.parse(volc.body) as { token: string; appId: string }
-    assert.deepEqual([body.token, body.appId], ['jwt-temporary', '6123456789'])
-    assert.equal(asked.at(-1)?.authorization, 'Bearer; volc-access-token-0001')
-    assert.deepEqual(JSON.parse(asked.at(-1)?.body ?? '{}'), { appid: '6123456789', duration: 300 })
-    for (const reply of [qwen, volc]) assert.doesNotMatch(reply.body, /sk-qwen-alice|volc-access-token/u)
+    const body = JSON.parse(volc.body) as { vendor: string; protocol: string; auth: string; token: string; appId: null; expiresAt: number }
+    assert.deepEqual([body.vendor, body.protocol, body.auth, body.token, body.appId], ['volc-voice', 'volcengine', 'api-key', 'volc-api-key-0001', null])
+    assert.ok(body.expiresAt >= before + 300_000 && body.expiresAt <= Date.now() + 300_000, 'the configured validity')
+    // Volcengine is not asked: there is nothing to trade.
+    assert.equal(asked.filter(a => a.url.startsWith('https://openspeech.bytedance.com/')).length, 0)
   })
 
   it('refuses tokens to the wrong credentials, switched-off vendors and unknown vendors', async () => {
@@ -260,16 +266,23 @@ describe('语音 for phones', () => {
     assert.equal((await token('alice', 'qwen-voice')).status, 403)
     await rt.admin.setKeyStatus(admin, key?.id ?? '', 'active')
     assert.equal((await token('alice', 'qwen-voice')).status, 200)
+    // 火山's key handed out as is still stops with its key.
+    await rt.admin.setVoiceSettings(admin, { vendors: { 'volc-voice': { tts: true } } })
+    const volcKey = (await rt.admin.keys()).find(k => k.vendor === 'volc-voice')
+    await rt.admin.setKeyStatus(admin, volcKey?.id ?? '', 'disabled')
+    assert.equal((await token('alice', 'volc-voice')).status, 403)
+    await rt.admin.setKeyStatus(admin, volcKey?.id ?? '', 'active')
+    assert.equal((await token('alice', 'volc-voice')).status, 200)
   })
 
   it('cuts off a disabled member and a revoked phone', async () => {
     const own = (await store.listCredentials()).find(c => c.member === 'alice' && c.kind === 'phone')
     await store.revokeCredential(own?.id ?? '')
-    assert.equal((await token('alice', 'qwen-voice')).status, 401)
+    for (const vendor of ['qwen-voice', 'volc-voice']) assert.equal((await token('alice', vendor)).status, 401, vendor)
     phone.alice = (await store.issueCredential('alice', 'phone', 'iPhone', 60_000)).token
     assert.equal((await token('alice', 'qwen-voice')).status, 200)
     await rt.admin.setStatus(admin, 'alice', 'disabled')
-    assert.equal((await token('alice', 'qwen-voice')).status, 401)
+    for (const vendor of ['qwen-voice', 'volc-voice']) assert.equal((await token('alice', vendor)).status, 401, vendor)
   })
 
   it('records the console\'s changes in the audit log', async () => {

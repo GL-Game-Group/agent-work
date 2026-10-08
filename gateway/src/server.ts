@@ -672,7 +672,7 @@ export function createGatewayHandler(deps: GatewayDeps): GatewayHandler {
       case `GET ${PREFIX}remote/hosts`:
         json(res, 200, { hosts: await tunnels.remotes(member) })
         return
-      // 语音: what the phone may use, and a short-lived vendor token to use it with.
+      // 语音: what the phone may use, and what to authenticate to the vendor with.
       case `GET ${PREFIX}phone/voice`:
         json(res, 200, await voice.forMember(member.name))
         return

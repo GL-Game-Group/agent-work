@@ -12,7 +12,8 @@
  *   each account belongs to one member at a time.
  * - A `voice` vendor (built in: 千问语音, 火山语音) is a key vendor GL Work for
  *   iOS reaches directly: the company service trades the member's key for a
- *   short-lived vendor token (voice.ts). Its models and voices are set under 语音.
+ *   short-lived vendor token (千问), or hands over the 火山 API Key made for
+ *   GL Work (voice.ts). Its models and voices are set under 语音.
  *
  * Enabling a vendor for a member assigns the least-shared active key or a free
  * account; members left without one are served as soon as one is added.
@@ -174,10 +175,12 @@ function compatOf(value: unknown): string | null {
   return encoded === '{}' ? null : encoded
 }
 
-/** A 火山语音 key as stored: "<app id>:<access token>". */
-export function volcengineCredential(secret: string): { appId: string; token: string } | undefined {
-  const match = /^(\d{4,20}):(\S{8,})$/u.exec(secret)
-  return match === null ? undefined : { appId: match[1] as string, token: match[2] as string }
+/**
+ * A 火山语音 key: the API Key of 豆包语音's new console (sent as `X-Api-Key`). The old
+ * console's "<app id>:<access token>" pair is not one.
+ */
+export function volcengineApiKey(secret: string): string | undefined {
+  return /^\d{4,20}:/u.test(secret) ? undefined : secret
 }
 
 export class Vendors {
@@ -340,8 +343,9 @@ export class Vendors {
     if (mode !== 'shared' && mode !== 'dedicated') throw new Refusal(400, 'Key 类型只能是共享或独立')
     const plain = typeof secret === 'string' ? secret.trim() : ''
     if (plain.length < 8 || plain.length > 512 || /\s/u.test(plain)) throw new Refusal(400, '请填写完整的 API Key')
-    // 豆包语音 signs in with an app's id and its access token, kept together as one secret.
-    if (vendor.protocol === 'volcengine' && volcengineCredential(plain) === undefined) throw new Refusal(400, '火山语音的 Key 请填写为 “APP ID:Access Token”')
+    if (vendor.protocol === 'volcengine' && volcengineApiKey(plain) === undefined) {
+      throw new Refusal(400, '火山语音请填写新版控制台的 API Key（豆包语音 → API Key），不是旧版的 APP ID:Access Token')
+    }
     if (member !== null && mode !== 'dedicated') throw new Refusal(400, '只有独立 Key 能直接指定成员')
     const sealed = this.sealer().seal(plain)
     const id = `key_${randomSecret().slice(0, 10)}`

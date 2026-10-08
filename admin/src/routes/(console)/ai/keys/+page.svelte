@@ -116,8 +116,8 @@
 			</div>
 			<input type="hidden" name="vendor" value={form.vendor} />
 			{#if form.vendor === 'volc-voice'}
-				<Field label="APP ID:Access Token" id="k-key" hint="火山控制台 → 豆包语音 → 应用的 APP ID 和 Access Token，中间用英文冒号连接。">
-					<Input id="k-key" name="key" type="password" placeholder="6123456789:xxxxxxxx" autocomplete="new-password" class="font-mono" required />
+				<Field label="API Key" id="k-key" hint="火山控制台 → 豆包语音（新版控制台）→ API Key。这个 Key 会下发到成员的手机，请单独建一个只给 GL Work 用的，只开通语音识别和语音合成。">
+					<Input id="k-key" name="key" type="password" placeholder="新版控制台的 API Key" autocomplete="new-password" class="font-mono" required />
 				</Field>
 			{:else}
 				<Field label="API Key" id="k-key"><Input id="k-key" name="key" type="password" placeholder="sk-…" autocomplete="new-password" class="font-mono" required /></Field>
@@ -132,11 +132,25 @@
 				</Field>
 				<input type="hidden" name="member" value={form.member} />
 			{/if}
-			<Alert.Root>
-				<ShieldCheck />
-				<Alert.Title>Key 不会离开服务端</Alert.Title>
-				<Alert.Description>成员拿到的是公司网关地址和自己的设备令牌或内部 Key；停用成员、吊销设备后立即失效。</Alert.Description>
-			</Alert.Root>
+			{#if form.vendor === 'volc-voice'}
+				<Alert.Root>
+					<ShieldAlert />
+					<Alert.Title>这个 Key 会下发到成员的手机</Alert.Title>
+					<Alert.Description>火山没有临时令牌，手机拿到的就是这个 Key，到期后重新取（有效期在“语音”里设置）。停用成员、吊销手机后在有效期内失效；Key 本身要作废，请在火山控制台删除后换一个新的。</Alert.Description>
+				</Alert.Root>
+			{:else if form.vendor === 'qwen-voice'}
+				<Alert.Root>
+					<ShieldCheck />
+					<Alert.Title>Key 不会离开服务端</Alert.Title>
+					<Alert.Description>手机拿到的是用这个 Key 换来的、几分钟就过期的临时令牌；停用成员、吊销手机后就换不到了。</Alert.Description>
+				</Alert.Root>
+			{:else}
+				<Alert.Root>
+					<ShieldCheck />
+					<Alert.Title>Key 不会离开服务端</Alert.Title>
+					<Alert.Description>成员拿到的是公司网关地址和自己的设备令牌或内部 Key；停用成员、吊销设备后立即失效。</Alert.Description>
+				</Alert.Root>
+			{/if}
 			<Dialog.Footer>
 				<Button type="button" variant="outline" onclick={() => (open = false)}>取消</Button>
 				<Button type="submit">加密保存</Button>

@@ -84,7 +84,7 @@
 	const GENDER: Record<string, string> = { female: '女', male: '男' };
 </script>
 
-<PageHeader title="语音" description="手机端的语音输入（语音转文字）和播报（文字转语音）。手机直接连厂商：公司服务用成员的 Key 换一个几分钟就过期的临时令牌给手机，Key 不离开服务端。成员的 Key 在“API Key”里录入并分配（建议用独立 Key，便于在厂商控制台分人核算）。">
+<PageHeader title="语音" description="手机端的语音输入（语音转文字）和播报（文字转语音）。手机直接连厂商：千问由公司服务用成员的 Key 换一个几分钟就过期的临时令牌给手机，Key 不离开服务端；火山没有临时令牌，手机拿到的就是单独给 GL Work 建的 API Key，到期后重新取。成员的 Key 在“API Key”里录入并分配（建议用独立 Key，便于在厂商控制台分人核算）。">
 </PageHeader>
 
 <div class="grid gap-4 lg:grid-cols-2">
@@ -203,8 +203,8 @@
 <div class="mt-4 grid gap-4 lg:grid-cols-2">
 	<Card.Root>
 		<Card.Header>
-			<Card.Title>临时令牌</Card.Title>
-			<Card.Description>手机每次用语音前换取，过期前自动续。限制的是换令牌的次数，实际用量在厂商控制台按各人的 Key 查看。</Card.Description>
+			<Card.Title>手机凭据</Card.Title>
+			<Card.Description>手机用语音前来取（千问是临时令牌，火山是 API Key），到期前自动续；有效期也是换 Key、停用成员生效所需的最长时间。限制的是取的次数，实际用量在厂商控制台按各人的 Key 查看。</Card.Description>
 		</Card.Header>
 		<Card.Content>
 			<form method="POST" action="?/tokens" use:enhance={toastForm('已保存')} class="flex flex-wrap items-end gap-4">
@@ -215,7 +215,7 @@
 		</Card.Content>
 	</Card.Root>
 	<Card.Root>
-		<Card.Header><Card.Title>最近 24 小时</Card.Title><Card.Description>谁换取了多少次令牌</Card.Description></Card.Header>
+		<Card.Header><Card.Title>最近 24 小时</Card.Title><Card.Description>谁取了多少次凭据</Card.Description></Card.Header>
 		<Card.Content>
 			{#if data.tokens.length > 0}
 				<Table.Root>

@@ -91,7 +91,11 @@
 			</Card.Header>
 			<Card.Content class="space-y-3 text-sm">
 				{#if v.type === 'voice'}
-					<div class="text-muted-foreground">手机端的语音输入和播报直接连 {v.name}；成员的 Key 只在公司服务里，手机拿到的是几分钟就过期的临时令牌。</div>
+					{#if v.id === 'volc-voice'}
+						<div class="text-muted-foreground">手机端的语音输入和播报直接连 {v.name}；手机拿到的就是这里的 API Key（单独给 GL Work 用的那个），到期后重新取。换 Key 或停用成员，在有效期内生效。</div>
+					{:else}
+						<div class="text-muted-foreground">手机端的语音输入和播报直接连 {v.name}；成员的 Key 只在公司服务里，手机拿到的是几分钟就过期的临时令牌。</div>
+					{/if}
 					<div class="grid grid-cols-2 gap-2 rounded-md border p-2 text-center">
 						<div><div class="font-semibold tabular-nums">{v.activeKeys}</div><div class="text-muted-foreground text-xs">可用 Key</div></div>
 						<div><div class="font-semibold tabular-nums">{v.members}</div><div class="text-muted-foreground text-xs">成员</div></div>

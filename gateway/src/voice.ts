@@ -3,17 +3,20 @@
  * vendors (千问语音 on Alibaba Model Studio, 火山语音 on Volcengine), which
  * the phone reaches directly.
  *
- * The phone never holds a vendor key. It asks the company service for a
- * short-lived vendor token, traded here with the member's own key (the
- * vendor's temporary API key, or Volcengine's STS token); a disabled member,
- * a revoked phone or a removed assignment gets none. Trades are counted per
- * member and hour. The vendors' voices come from their official voice lists,
+ * The phone asks the company service for what to authenticate with: for
+ * 千问语音 a short-lived temporary API key traded here with the member's own
+ * key; for 火山语音 the API Key itself (豆包语音's new console has no temporary
+ * token for it; the owner chose on 2026-10-08 to hand phones a key made for
+ * GL Work alone, see CLAUDE.md). Either way it comes with an expiry the phone
+ * asks again after, so a replaced key or a disabled member stops within that
+ * time; a disabled member, a revoked phone or a removed assignment gets none.
+ * Requests are counted per member and hour. The vendors' voices come from their official voice lists,
  * fetched on demand; administrators choose which ones members see.
  */
 import type { Store } from './db.ts'
 import type { Sql } from './sql.ts'
 import { Refusal } from './errors.ts'
-import { volcengineCredential, type Vendor, type Vendors } from './vendors.ts'
+import { volcengineApiKey, type Vendor, type Vendors } from './vendors.ts'
 
 const HOUR_MS = 60 * 60 * 1000
 const MODEL_ID = /^[\w.:/@+-]{1,128}$/u
@@ -67,13 +70,19 @@ export interface VoiceEntry {
 
 type ParsedVoice = Omit<VoiceEntry, 'vendor' | 'enabled'>
 
-/** A vendor token for the phone. */
+/** What the phone authenticates to a voice vendor with. */
 export interface VoiceToken {
   vendor: string
   protocol: 'dashscope' | 'volcengine'
+  /**
+   * `temporary`: a short-lived vendor token (千问: `Authorization: Bearer <token>`).
+   * `api-key`: the vendor key itself (火山: `X-Api-Key: <token>` beside `X-Api-Resource-Id`).
+   */
+  auth: 'temporary' | 'api-key'
   token: string
-  /** Volcengine's app id, which its APIs take beside the token. */
+  /** Always null now (the old Volcengine console's app id); kept for clients that read it. */
   appId: string | null
+  /** Ask again after this (ms since epoch). */
   expiresAt: number
 }
 
@@ -196,12 +205,12 @@ const MAX_SAMPLE_BYTES = 5 * 1024 * 1024
  * code 20000000 at the end. @returns the MP3 bytes.
  */
 export async function volcengineSynthesize(
-  fetchImpl: typeof fetch, base: string, credential: { appId: string; token: string }, model: string, speaker: string, text: string,
+  fetchImpl: typeof fetch, base: string, apiKey: string, model: string, speaker: string, text: string,
 ): Promise<Uint8Array> {
   const response = await fetchImpl(`${base}/api/v3/tts/unidirectional`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
     headers: {
-      'content-type': 'application/json', 'x-api-app-id': credential.appId, 'x-api-access-key': credential.token,
+      'content-type': 'application/json', 'x-api-key': apiKey,
       'x-api-resource-id': model, 'x-api-request-id': crypto.randomUUID(),
     },
     body: JSON.stringify({ user: { uid: 'glwork-console' }, req_params: { text, speaker, audio_params: { format: 'mp3', sample_rate: 24000 } } }),
@@ -415,10 +424,10 @@ export class Voice {
       } else if (vendor.protocol === 'volcengine') {
         const keyId = (await this.vendors.listKeys(vendor.id)).find(k => k.status === 'active')?.id
         if (keyId === undefined) throw new Refusal(409, `先在“API Key”里给 ${vendor.name} 录入一个 Key，才能现场合成试听`)
-        const credential = volcengineCredential(await this.vendors.keySecret(keyId))
-        if (credential === undefined) throw new Refusal(502, `${vendor.name} 的 Key 格式不对，请重新录入`)
+        const apiKey = volcengineApiKey(await this.vendors.keySecret(keyId))
+        if (apiKey === undefined) throw new Refusal(502, `${vendor.name} 的 Key 是旧版控制台的，请换成新版控制台的 API Key`)
         const model = voice.models[0] ?? (await this.settings()).vendors[vendor.id]?.ttsModel ?? 'seed-tts-2.0'
-        const body = await volcengineSynthesize(fetchImpl, vendor.baseUrl ?? '', credential, model, voice.id, `你好，我是${voice.name}，很高兴为你朗读 Agent 的回复。`)
+        const body = await volcengineSynthesize(fetchImpl, vendor.baseUrl ?? '', apiKey, model, voice.id, `你好，我是${voice.name}，很高兴为你朗读 Agent 的回复。`)
         sample = { contentType: 'audio/mpeg', body }
       } else {
         throw new Refusal(404, `${voice.name} 没有官方试听`)
@@ -455,19 +464,12 @@ export class Voice {
         const body = await response.json() as { token?: unknown; expires_at?: unknown }
         if (typeof body.token !== 'string') throw new Refusal(502, `${vendor.name} 没有返回令牌`)
         const expiresAt = typeof body.expires_at === 'number' ? body.expires_at * 1000 : now + ttl * 1000
-        token = { vendor: vendor.id, protocol: 'dashscope', token: body.token, appId: null, expiresAt }
+        token = { vendor: vendor.id, protocol: 'dashscope', auth: 'temporary', token: body.token, appId: null, expiresAt }
       } else if (vendor.protocol === 'volcengine') {
-        const credential = volcengineCredential(secret)
-        if (credential === undefined) throw new Refusal(502, `${vendor.name} 的 Key 格式不对，请重新录入`)
-        const response = await fetchImpl(`${base}/api/v1/sts/token`, {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10_000),
-          headers: { 'authorization': `Bearer; ${credential.token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ appid: credential.appId, duration: ttl }),
-        })
-        if (!response.ok) throw new Refusal(502, `${vendor.name} 拒绝换取令牌（${String(response.status)}），请检查 Key`)
-        const body = await response.json() as { jwt_token?: unknown }
-        if (typeof body.jwt_token !== 'string') throw new Refusal(502, `${vendor.name} 没有返回令牌`)
-        token = { vendor: vendor.id, protocol: 'volcengine', token: body.jwt_token, appId: credential.appId, expiresAt: now + ttl * 1000 }
+        // The key itself, made for GL Work alone; the expiry only sets when the phone asks again.
+        const apiKey = volcengineApiKey(secret)
+        if (apiKey === undefined) throw new Refusal(502, `${vendor.name} 的 Key 是旧版控制台的，请管理员换成新版控制台的 API Key`)
+        token = { vendor: vendor.id, protocol: 'volcengine', auth: 'api-key', token: apiKey, appId: null, expiresAt: now + ttl * 1000 }
       } else {
         throw new Refusal(500, `${vendor.name} 的接口类型不支持语音`)
       }
