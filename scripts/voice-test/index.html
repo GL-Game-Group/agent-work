@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>语音测试</title>
+    <style>
+      :root {
+        --bg: #f6f6f7;
+        --card: #ffffff;
+        --text: #18181b;
+        --muted: #71717a;
+        --border: #e4e4e7;
+        --accent: #037cf4;
+        --error: #dc2626;
+        --ok: #16a34a;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111113;
+          --card: #1b1b1f;
+          --text: #f4f4f5;
+          --muted: #a1a1aa;
+          --border: #2e2e33;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 24px 16px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      .note { color: var(--muted); margin: 0 0 20px; }
+      .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+      .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+      .card h2 { font-size: 16px; margin: 0 0 12px; }
+      label { display: block; margin: 8px 0 2px; color: var(--muted); font-size: 12px; }
+      input, textarea {
+        width: 100%;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg);
+        color: var(--text);
+        font: inherit;
+      }
+      textarea { min-height: 60px; resize: vertical; }
+      .row { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+      .check { display: flex; gap: 6px; align-items: center; margin-top: 8px; color: var(--muted); font-size: 12px; }
+      .check input { width: auto; }
+      button {
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 14px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+      button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .section { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 10px; }
+      .result { min-height: 24px; padding: 8px 10px; border-radius: 8px; background: var(--bg); margin-top: 8px; white-space: pre-wrap; }
+      .log {
+        margin-top: 8px;
+        max-height: 180px;
+        overflow: auto;
+        font: 12px/1.4 ui-monospace, Menlo, monospace;
+        color: var(--muted);
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .log .error { color: var(--error); }
+      .log .ok { color: var(--ok); }
+      audio { width: 100%; margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>语音测试</h1>
+    <p class="note">
+      用和手机端相同的协议测试千问、火山的语音识别和语音播报。Key 只留在这个页面和本机的测试服务里，不会写到任何地方。厂商拒绝时，下面会显示它返回的状态码和原因。
+    </p>
+    <div class="grid" id="cards"></div>
+
+    <template id="card">
+      <div class="card">
+        <h2 data-name></h2>
+        <label>API Key</label>
+        <input type="password" data-key autocomplete="off" />
+        <label class="check" data-temporary-row><input type="checkbox" data-temporary checked />先换成临时 Key（和手机一样）</label>
+
+        <div class="section">
+          <strong>语音识别</strong>
+          <label>识别模型</label>
+          <input data-asr-model />
+          <div class="row">
+            <button data-asr-start>开始识别</button>
+            <button class="secondary" data-asr-stop disabled>停止</button>
+          </div>
+          <div class="result" data-asr-result></div>
+        </div>
+
+        <div class="section">
+          <strong>语音播报</strong>
+          <label>播报模型</label>
+          <input data-tts-model />
+          <label>音色（在后台「AI 管理 → 语音」的音色列表里复制 ID）</label>
+          <input data-tts-voice />
+          <label data-rate-row>语速（火山，-50 慢 … 100 快）</label>
+          <input data-tts-rate type="number" value="0" />
+          <label>文本</label>
+          <textarea data-tts-text>你好，我是 GL Work 的语音播报。今天的任务已经完成，请到电脑上查看结果。</textarea>
+          <div class="row"><button data-tts-play>播报</button></div>
+          <audio data-tts-audio controls></audio>
+        </div>
+
+        <div class="log" data-log></div>
+      </div>
+    </template>
+
+    <script>
+      const VENDORS = [
+        {
+          id: 'qwen',
+          name: '千问（阿里云百炼）',
+          asrModel: 'qwen3-asr-flash-realtime',
+          ttsModel: 'qwen3-tts-flash',
+          voice: 'Cherry',
+          temporary: true,
+          rate: false
+        },
+        {
+          id: 'volc',
+          name: '火山（豆包语音）',
+          asrModel: 'volc.seedasr.sauc.duration',
+          ttsModel: 'seed-tts-2.0',
+          voice: 'zh_female_vv_uranus_bigtts',
+          temporary: false,
+          rate: true
+        }
+      ]
+
+      function mount(vendor) {
+        const node = document.getElementById('card').content.firstElementChild.cloneNode(true)
+        const $ = (name) => node.querySelector(`[data-${name}]`)
+        $('name').textContent = vendor.name
+        $('asr-model').value = vendor.asrModel
+        $('tts-model').value = vendor.ttsModel
+        $('tts-voice').value = vendor.voice
+        if (!vendor.temporary) $('temporary-row').remove()
+        if (!vendor.rate) {
+          $('rate-row').remove()
+          $('tts-rate').remove()
+        }
+        const log = (text, kind = '') => {
+          const line = document.createElement('div')
+          line.className = kind
+          line.textContent = `${new Date().toLocaleTimeString()}  ${text}`
+          $('log').prepend(line)
+        }
+        const key = () => $('key').value.trim()
+        const temporary = () => vendor.temporary && $('temporary').checked
+
+        // 语音识别：麦克风 → 16 kHz 16 位 PCM → 本机测试服务 → 厂商
+        let socket = null
+        let audio = null
+        const stopMic = () => {
+          audio?.processor.disconnect()
+          audio?.source.disconnect()
+          audio?.stream.getTracks().forEach((track) => track.stop())
+          void audio?.context.close()
+          audio = null
+        }
+        $('asr-start').onclick = async () => {
+          if (!key()) return log('先填 API Key', 'error')
+          $('asr-result').textContent = ''
+          $('asr-start').disabled = true
+          $('asr-stop').disabled = false
+          socket = new WebSocket(`ws://${location.host}/api/asr`)
+          socket.binaryType = 'arraybuffer'
+          socket.onmessage = (message) => {
+            const body = JSON.parse(message.data)
+            if (body.type === 'text') $('asr-result').textContent = body.text
+            else if (body.type === 'done') {
+              $('asr-result').textContent = body.text
+              log(`识别完成：${body.text || '（空）'}`, 'ok')
+              socket.close()
+            } else if (body.type === 'error') {
+              log(body.text, 'error')
+              stopMic()
+              $('asr-start').disabled = false
+              $('asr-stop').disabled = true
+            } else if (body.type === 'log') log(body.text)
+            else if (body.type === 'event') log(typeof body.event === 'string' ? body.event : JSON.stringify(body.event))
+          }
+          socket.onopen = async () => {
+            socket.send(JSON.stringify({ vendor: vendor.id, key: key(), model: $('asr-model').value.trim(), temporary: temporary() }))
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true } })
+              const context = new AudioContext({ sampleRate: 16000 })
+              const source = context.createMediaStreamSource(stream)
+              const processor = context.createScriptProcessor(2048, 1, 1)
+              processor.onaudioprocess = (event) => {
+                const input = event.inputBuffer.getChannelData(0)
+                const pcm = new Int16Array(input.length)
+                for (let i = 0; i < input.length; i += 1) {
+                  const sample = Math.max(-1, Math.min(1, input[i]))
+                  pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff
+                }
+                if (socket?.readyState === 1) socket.send(pcm.buffer)
+              }
+              source.connect(processor)
+              processor.connect(context.destination)
+              audio = { stream, context, source, processor }
+              log('麦克风已打开（16 kHz）')
+            } catch (error) {
+              log(`打不开麦克风：${error.message}`, 'error')
+            }
+          }
+        }
+        $('asr-stop').onclick = () => {
+          stopMic()
+          socket?.readyState === 1 && socket.send('finish')
+          $('asr-start').disabled = false
+          $('asr-stop').disabled = true
+          log('已停止录音，等待最终结果…')
+        }
+
+        // 语音播报
+        $('tts-play').onclick = async () => {
+          if (!key()) return log('先填 API Key', 'error')
+          $('tts-play').disabled = true
+          log('正在合成…')
+          try {
+            const response = await fetch('/api/tts', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                vendor: vendor.id,
+                key: key(),
+                temporary: temporary(),
+                model: $('tts-model').value.trim(),
+                voice: $('tts-voice').value.trim(),
+                rate: vendor.rate ? Number($('tts-rate').value) : 0,
+                text: $('tts-text').value
+              })
+            })
+            if (!response.ok) {
+              log((await response.json()).error, 'error')
+              return
+            }
+            const blob = await response.blob()
+            $('tts-audio').src = URL.createObjectURL(blob)
+            await $('tts-audio').play()
+            log(`合成成功（${Math.round(blob.size / 1024)} KB，${blob.type}）`, 'ok')
+          } catch (error) {
+            log(`合成出错：${error.message}`, 'error')
+          } finally {
+            $('tts-play').disabled = false
+          }
+        }
+
+        document.getElementById('cards').append(node)
+      }
+
+      VENDORS.forEach(mount)
+    </script>
+  </body>
+</html>
