@@ -25,6 +25,10 @@ const QWEN_TTS = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal
 const QWEN_TOKEN = 'https://dashscope.aliyuncs.com/api/v1/tokens'
 const VOLC_ASR = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
 const VOLC_TTS = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
+const QWEN_TTS_REALTIME = 'wss://dashscope.aliyuncs.com/api-ws/v1/realtime'
+const VOLC_TTS_BIDIRECTION = 'wss://openspeech.bytedance.com/api/v3/tts/bidirection'
+/** Streaming read-aloud comes as 16 kHz 16-bit mono PCM, what the phone's audio engine plays. */
+const STREAM_RATE = 16000
 
 const log = (...args) => console.log(new Date().toISOString().slice(11, 19), ...args)
 
@@ -98,6 +102,170 @@ async function volcSpeech({ key, model, voice, text, rate }) {
     throw new Error(`火山合成失败 ${response.status} ${failure}: ${raw.slice(0, 500)}`)
   }
   return { type: 'audio/mpeg', bytes: Buffer.concat(parts) }
+}
+
+/** 16-bit mono PCM in a WAV header, so the page's <audio> can play a streamed reading. */
+function wav(pcm, rate = STREAM_RATE) {
+  const head = Buffer.alloc(44)
+  head.write('RIFF', 0)
+  head.writeUInt32LE(36 + pcm.length, 4)
+  head.write('WAVEfmt ', 8)
+  head.writeUInt32LE(16, 16)
+  head.writeUInt16LE(1, 20)
+  head.writeUInt16LE(1, 22)
+  head.writeUInt32LE(rate, 24)
+  head.writeUInt32LE(rate * 2, 28)
+  head.writeUInt16LE(2, 32)
+  head.writeUInt16LE(16, 34)
+  head.write('data', 36)
+  head.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([head, pcm])
+}
+
+/** Runs one streamed reading: resolves with all PCM, logging how soon the first audio came. */
+function streamed(name, open) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now()
+    const parts = []
+    let first = 0
+    const timer = setTimeout(() => done(new Error(`${name} 30 秒没有结束`)), 30_000)
+    const done = (error) => {
+      clearTimeout(timer)
+      if (error) return reject(error)
+      log(name, `首包 ${first ? first - started : '-'} ms，共 ${Date.now() - started} ms，${parts.length} 段`)
+      if (parts.length === 0) return reject(new Error(`${name} 没有返回音频`))
+      resolve({ type: 'audio/wav', bytes: wav(Buffer.concat(parts)) })
+    }
+    open({
+      audio: (chunk) => {
+        first ||= Date.now()
+        parts.push(chunk)
+      },
+      done
+    })
+  })
+}
+
+/** Qwen-TTS Realtime: session.update, the text, session.finish; audio as response.audio.delta. */
+function qwenStreamSpeech({ key, model, voice, text }) {
+  return streamed('qwen 实时播报', ({ audio, done }) => {
+    const socket = new WebSocket(`${QWEN_TTS_REALTIME}?model=${encodeURIComponent(model)}`, {
+      headers: { authorization: `Bearer ${key}` }
+    })
+    const send = (body) => socket.send(JSON.stringify({ event_id: randomUUID(), ...body }))
+    socket.on('unexpected-response', (_req, res) => {
+      let body = ''
+      res.on('data', (c) => (body += c))
+      res.on('end', () => done(new Error(`千问实时播报握手被拒 ${res.statusCode}: ${body.slice(0, 300)}`)))
+    })
+    socket.on('open', () => {
+      send({
+        type: 'session.update',
+        session: { mode: 'server_commit', voice, language_type: 'Chinese', response_format: 'pcm', sample_rate: STREAM_RATE }
+      })
+      send({ type: 'input_text_buffer.append', text })
+      send({ type: 'session.finish' })
+    })
+    socket.on('message', (data) => {
+      const event = JSON.parse(data.toString())
+      if (event.type === 'response.audio.delta') audio(Buffer.from(event.delta, 'base64'))
+      else if (event.type === 'error') done(new Error(`千问实时播报出错: ${JSON.stringify(event.error ?? event).slice(0, 300)}`))
+      else if (event.type === 'session.finished') {
+        socket.close()
+        done()
+      } else log('qwen tts event', event.type)
+    })
+    socket.on('error', (error) => done(error))
+  })
+}
+
+/**
+ * Volcengine's bidirectional TTS frames: a 4-byte header (full client request, "with event"), the
+ * event number, the session id for session events, then the JSON payload.
+ */
+const VOLC_EVENT = { StartConnection: 1, FinishConnection: 2, StartSession: 100, FinishSession: 102, TaskRequest: 200 }
+function volcEventFrame(event, sessionId, payload) {
+  const parts = [Buffer.from([0x11, 0x14, 0x10, 0x00])]
+  const number = Buffer.alloc(4)
+  number.writeInt32BE(event)
+  parts.push(number)
+  if (sessionId) {
+    const id = Buffer.from(sessionId)
+    const size = Buffer.alloc(4)
+    size.writeUInt32BE(id.length)
+    parts.push(size, id)
+  }
+  const body = Buffer.from(JSON.stringify(payload))
+  const size = Buffer.alloc(4)
+  size.writeUInt32BE(body.length)
+  parts.push(size, body)
+  return Buffer.concat(parts)
+}
+
+function readVolcEvent(data) {
+  const type = data[1] >> 4
+  const flags = data[1] & 0x0f
+  let offset = (data[0] & 0x0f) * 4
+  if (type === 0b1111) {
+    const code = data.readUInt32BE(offset)
+    const size = data.readUInt32BE(offset + 4)
+    return { error: `${code} ${data.subarray(offset + 8, offset + 8 + size).toString()}` }
+  }
+  let event = 0
+  if (flags & 0x04) {
+    event = data.readInt32BE(offset)
+    offset += 4
+  }
+  // Connection events carry the connection id; session events the session id.
+  if (event >= 50) {
+    const idSize = data.readUInt32BE(offset)
+    offset += 4 + idSize
+  }
+  const size = data.readUInt32BE(offset)
+  const payload = data.subarray(offset + 4, offset + 4 + size)
+  return { type, event, payload }
+}
+
+function volcStreamSpeech({ key, model, voice, text, rate }) {
+  return streamed('volc 实时播报', ({ audio, done }) => {
+    const sessionId = randomUUID()
+    const socket = new WebSocket(VOLC_TTS_BIDIRECTION, {
+      headers: { 'x-api-key': key, 'x-api-resource-id': model, 'x-api-connect-id': randomUUID() }
+    })
+    const req = {
+      speaker: voice,
+      audio_params: { format: 'pcm', sample_rate: STREAM_RATE, speech_rate: Number(rate) || 0 }
+    }
+    socket.on('unexpected-response', (_req, res) => {
+      let body = ''
+      res.on('data', (c) => (body += c))
+      res.on('end', () => done(new Error(`火山实时播报握手被拒 ${res.statusCode}: ${body.slice(0, 300)}`)))
+    })
+    socket.on('open', () => socket.send(volcEventFrame(VOLC_EVENT.StartConnection, null, {})))
+    socket.on('message', (data) => {
+      const frame = readVolcEvent(data)
+      if (frame.error) return done(new Error(`火山实时播报出错: ${frame.error}`))
+      if (frame.event === 50) {
+        socket.send(volcEventFrame(VOLC_EVENT.StartSession, sessionId, {
+          user: { uid: 'glwork-voice-test' }, event: VOLC_EVENT.StartSession, namespace: 'BidirectionalTTS', req_params: req
+        }))
+      } else if (frame.event === 150) {
+        socket.send(volcEventFrame(VOLC_EVENT.TaskRequest, sessionId, {
+          user: { uid: 'glwork-voice-test' }, event: VOLC_EVENT.TaskRequest, namespace: 'BidirectionalTTS', req_params: { ...req, text }
+        }))
+        socket.send(volcEventFrame(VOLC_EVENT.FinishSession, sessionId, {}))
+      } else if (frame.event === 352 && frame.type === 0b1011) {
+        audio(Buffer.from(frame.payload))
+      } else if (frame.event === 152) {
+        socket.send(volcEventFrame(VOLC_EVENT.FinishConnection, null, {}))
+        socket.close()
+        done()
+      } else if (frame.event === 51 || frame.event === 153) {
+        done(new Error(`火山实时播报失败 (${frame.event}): ${frame.payload.toString().slice(0, 300)}`))
+      } else log('volc tts event', frame.event)
+    })
+    socket.on('error', (error) => done(error))
+  })
 }
 
 /** Volcengine's sauc frames (see orca/mobile/src/eva/glwork/voice/volc-asr-frames.ts). */
@@ -248,7 +416,13 @@ const server = createServer(async (req, res) => {
     try {
       let key = body.key
       if (body.vendor === 'qwen' && body.temporary) key = await qwenTemporaryKey(body.key)
-      const audio = body.vendor === 'qwen' ? await qwenSpeech({ ...body, key }) : await volcSpeech(body)
+      const audio = body.stream
+        ? body.vendor === 'qwen'
+          ? await qwenStreamSpeech({ ...body, key })
+          : await volcStreamSpeech(body)
+        : body.vendor === 'qwen'
+          ? await qwenSpeech({ ...body, key })
+          : await volcSpeech(body)
       res.writeHead(200, { 'content-type': audio.type })
       res.end(audio.bytes)
     } catch (error) {

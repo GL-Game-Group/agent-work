@@ -105,15 +105,20 @@
 
         <div class="section">
           <strong>语音播报</strong>
-          <label>播报模型</label>
+          <label>播报模型（整段合成，手机上叫“语音”）</label>
           <input data-tts-model />
+          <label>实时播报模型（边合成边播，手机上叫“实时”）</label>
+          <input data-tts-stream-model />
           <label>音色（在后台「AI 管理 → 语音」的音色列表里复制 ID）</label>
           <input data-tts-voice />
           <label data-rate-row>语速（火山，-50 慢 … 100 快）</label>
           <input data-tts-rate type="number" value="0" />
           <label>文本</label>
           <textarea data-tts-text>你好，我是 GL Work 的语音播报。今天的任务已经完成，请到电脑上查看结果。</textarea>
-          <div class="row"><button data-tts-play>播报</button></div>
+          <div class="row">
+            <button data-tts-play>播报</button>
+            <button data-tts-stream>实时播报</button>
+          </div>
           <audio data-tts-audio controls></audio>
         </div>
 
@@ -128,6 +133,7 @@
           name: '千问（阿里云百炼）',
           asrModel: 'qwen3-asr-flash-realtime',
           ttsModel: 'qwen3-tts-flash',
+          ttsStreamModel: 'qwen3-tts-flash-realtime',
           voice: 'Cherry',
           temporary: true,
           rate: false
@@ -137,6 +143,7 @@
           name: '火山（豆包语音）',
           asrModel: 'volc.seedasr.sauc.duration',
           ttsModel: 'seed-tts-2.0',
+          ttsStreamModel: 'seed-tts-2.0',
           voice: 'zh_female_vv_uranus_bigtts',
           temporary: false,
           rate: true
@@ -149,6 +156,7 @@
         $('name').textContent = vendor.name
         $('asr-model').value = vendor.asrModel
         $('tts-model').value = vendor.ttsModel
+        $('tts-stream-model').value = vendor.ttsStreamModel
         $('tts-voice').value = vendor.voice
         if (!vendor.temporary) $('temporary-row').remove()
         if (!vendor.rate) {
@@ -229,11 +237,13 @@
           log('已停止录音，等待最终结果…')
         }
 
-        // 语音播报
-        $('tts-play').onclick = async () => {
+        // 语音播报：整段（“语音”）或实时（服务端收齐实时音频后包成 WAV；日志里看首包时间）
+        const speak = async (stream) => {
           if (!key()) return log('先填 API Key', 'error')
-          $('tts-play').disabled = true
-          log('正在合成…')
+          const button = $(stream ? 'tts-stream' : 'tts-play')
+          button.disabled = true
+          log(stream ? '正在实时合成…（首包时间见终端日志）' : '正在合成…')
+          const started = performance.now()
           try {
             const response = await fetch('/api/tts', {
               method: 'POST',
@@ -242,7 +252,8 @@
                 vendor: vendor.id,
                 key: key(),
                 temporary: temporary(),
-                model: $('tts-model').value.trim(),
+                stream,
+                model: $(stream ? 'tts-stream-model' : 'tts-model').value.trim(),
                 voice: $('tts-voice').value.trim(),
                 rate: vendor.rate ? Number($('tts-rate').value) : 0,
                 text: $('tts-text').value
@@ -255,13 +266,16 @@
             const blob = await response.blob()
             $('tts-audio').src = URL.createObjectURL(blob)
             await $('tts-audio').play()
-            log(`合成成功（${Math.round(blob.size / 1024)} KB，${blob.type}）`, 'ok')
+            const ms = Math.round(performance.now() - started)
+            log(`${stream ? '实时' : ''}合成成功（${Math.round(blob.size / 1024)} KB，${blob.type}，用时 ${ms} ms）`, 'ok')
           } catch (error) {
             log(`合成出错：${error.message}`, 'error')
           } finally {
-            $('tts-play').disabled = false
+            button.disabled = false
           }
         }
+        $('tts-play').onclick = () => speak(false)
+        $('tts-stream').onclick = () => speak(true)
 
         document.getElementById('cards').append(node)
       }
